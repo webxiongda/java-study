@@ -1,0 +1,17 @@
+.DS_Store
+
+# Java build output
+*.class
+target/
+build/
+out/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.iml
+
+# Logs and local environment
+*.log
+.env
+.env.*
