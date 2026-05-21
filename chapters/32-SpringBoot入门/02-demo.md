@@ -1,53 +1,193 @@
-# Chapter 32 SpringBoot入门 - 实操 Demo
+# Chapter 32 Spring Boot 入门 - 实操 Demo
 
 ## Demo 目标
 
-完成一个围绕 **写出第一个 REST API** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+从 0 到可 curl 的 Boot 应用：`/health` Actuator + 1 个 POST 接口 + 自动配置报告 + Fat JAR 打包。
 
-## 前置条件
+## 前置
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+- JDK 21、Maven 3.9+、curl
 
-## 实操步骤
+## 一、start.spring.io 生成骨架
 
-1. 创建本章练习分支或目录，名称包含 chapter-32。
-2. 根据“Starter、自动配置、Controller、Service”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：SpringBoot入门 在博客项目中承担什么责任。
+```bash
+curl https://start.spring.io/starter.zip \
+  -d type=maven-project \
+  -d language=java \
+  -d bootVersion=3.3.5 \
+  -d groupId=com.example \
+  -d artifactId=blog-boot \
+  -d javaVersion=21 \
+  -d dependencies=web,actuator,lombok \
+  -o blog-boot.zip
+unzip blog-boot.zip && cd blog-boot
+```
 
-## 示例代码
+## 二、主类
 
-~~~java
-@RestController
-@RequestMapping("/api/articles")
-@RequiredArgsConstructor
-public class ArticleController {
-    private final ArticleService articleService;
-
-    @GetMapping("/{id}")
-    public ApiResponse<ArticleDetailResponse> detail(@PathVariable Long id) {
-        return ApiResponse.ok(articleService.getDetail(id));
+```java
+@SpringBootApplication
+public class BlogApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(BlogApplication.class, args);
     }
 }
-~~~
+```
 
-## 运行与验证
+## 三、最小 REST 接口
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+```java
+@RestController
+@RequestMapping("/api/posts")
+@RequiredArgsConstructor
+public class PostController {
 
-## 建议提交信息
+    private final PostService postService;
 
-~~~bash
-git add .
-git commit -m "chapter 32: SpringBoot入门 demo"
-~~~
+    @GetMapping
+    public List<PostVO> list(@RequestParam(defaultValue = "0") Long lastId,
+                             @RequestParam(defaultValue = "10") int size) {
+        return postService.page(lastId, size);
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public PostVO create(@RequestBody @Valid PostCreateReq req) {
+        return postService.create(req);
+    }
+}
+```
+
+## 四、配置
+
+`application.yml`：
+
+```yaml
+server:
+  port: 8080
+
+management:
+  endpoints.web.exposure.include: health,info,metrics
+  endpoint.health.show-details: when-authorized
+
+spring:
+  application:
+    name: blog-api
+  profiles:
+    active: dev
+```
+
+`application-dev.yml`：
+
+```yaml
+logging:
+  level:
+    com.example: DEBUG
+    org.springframework.web: DEBUG
+```
+
+## 五、启动
+
+```bash
+mvn spring-boot:run
+# 或
+mvn package && java -jar target/blog-boot-0.0.1-SNAPSHOT.jar
+```
+
+期望日志：
+
+```
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+...
+Started BlogApplication in 2.4 seconds (JVM running for 2.9)
+```
+
+## 六、验证
+
+```bash
+# 健康检查
+curl http://localhost:8080/actuator/health
+# {"status":"UP"}
+
+# 创建文章
+curl -X POST http://localhost:8080/api/posts \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Hi Boot","summary":"test","content":"body","publish":true}'
+# {"id":1,"title":"Hi Boot",...}
+```
+
+## 七、自动配置报告
+
+```bash
+java -jar target/blog-boot-0.0.1-SNAPSHOT.jar --debug 2>&1 | grep -A3 "DataSourceAutoConfiguration"
+```
+
+输出：
+
+```
+DataSourceAutoConfiguration matched:
+  - @ConditionalOnClass found required class 'javax.sql.DataSource' (OnClassCondition)
+  ...
+MyBatisAutoConfiguration matched:
+  - @ConditionalOnClass found required classes 'org.mybatis.spring.SqlSessionFactory' ...
+```
+
+## 八、关掉某个自动配置
+
+```yaml
+spring:
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+```
+
+或注解：
+
+```java
+@SpringBootApplication(exclude = DataSourceAutoConfiguration.class)
+```
+
+## 九、自定义 HealthIndicator
+
+```java
+@Component
+public class DbHealthIndicator implements HealthIndicator {
+    @Autowired DataSource ds;
+
+    @Override
+    public Health health() {
+        try (var conn = ds.getConnection();
+             var ps = conn.prepareStatement("SELECT 1");
+             var rs = ps.executeQuery()) {
+            rs.next();
+            return Health.up().withDetail("ping", "ok").build();
+        } catch (Exception e) {
+            return Health.down().withException(e).build();
+        }
+    }
+}
+```
+
+访问 `/actuator/health` 看到：
+
+```json
+{"status":"UP","components":{"db":{"status":"UP","details":{"ping":"ok"}}}}
+```
+
+## 十、失败场景：包路径错误
+
+```java
+// 错：主类在子包
+com.example.blog.config.BlogApplication   // ❌ controller/ 扫不到
+```
+
+报错：`No mapping for GET /api/posts`
+
+修法：把主类移到 `com.example.blog.BlogApplication`（最顶层）。
+
+## 提交建议
+
+```bash
+git add src/ pom.xml application.yml
+git commit -m "chapter 32: boot skeleton + actuator + first REST endpoint"
+```

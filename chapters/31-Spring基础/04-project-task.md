@@ -1,40 +1,90 @@
-# Chapter 31 Spring基础 - 项目任务
+# Chapter 31 Spring 基础 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**完成 Spring Hello World**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+用纯 Spring Framework（无 Boot）搭一个迷你 IoC 容器，体验 Bean 注册、AOP、Profile 的原始形态，为 32 章的 Spring Boot 作对比基础。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **Spring基础** 能力，不能只停留在知识点阅读。
+理解"Spring Boot 帮你做了什么"的最好方式，是先不用它。这个任务刻意不用 Boot，把所有配置手写出来，配好后再迁到 Boot 看哪些东西消失了。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 IoC、DI、Bean、配置方式、生命周期 的关键点。
-2. 实现或设计“完成 Spring Hello World”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：纯 Spring 项目骨架
+
+```bash
+mkdir spring-raw && cd spring-raw
+mvn archetype:generate -DarchetypeArtifactId=maven-archetype-quickstart
+```
+
+加 spring-context + spring-aspects 依赖（theory 里的版本）。
+
+### Step 2：AppConfig + ComponentScan
+
+写 `AppConfig`：
+
+- `@ComponentScan("com.example")`
+- `@EnableAspectJAutoProxy`
+- `@PropertySource("classpath:application.properties")`
+
+在 `Main` 里 `new AnnotationConfigApplicationContext(AppConfig.class)` 启动，打印所有 Bean 名。
+
+### Step 3：Service + Mapper 骨架
+
+写 3 个类（不用真实 DB）：
+
+```
+FakePostMapper（@Repository）→ PostService（@Service）→ PostController（@Component）
+```
+
+全部构造器注入，没有一个 `@Autowired` 字段注入。
+
+写 1 个方法：`PostService.findAll() → mapper.list()`，在 Main 里调用，输出结果。
+
+### Step 4：AOP 计时切面
+
+写 `TimingAspect`，拦截 `within(@Repository *)` 的所有方法，打印耗时。
+
+故意在 FakePostMapper 里 `Thread.sleep(50)` 验证切面是否打印出 `cost=50ms`。
+
+### Step 5：Profile 区分配置
+
+写 2 个 `@Profile` 的 DataSource Bean（`dev` / `prod`）：
+
+- `dev`：连本地 H2（内存库）
+- `prod`：连 MySQL
+
+用 `-Dspring.profiles.active=dev` 启动，确认日志里是 `DevDataSource`。
+
+### Step 6：循环依赖与自动装配冲突
+
+故意制造：
+
+1. A 构造器依赖 B、B 构造器依赖 A → 截图报错信息 → 用 `@Lazy` 修复。
+2. 两个 `PayService` 实现 → 截图 `NoUniqueBeanDefinitionException` → 用 `@Primary` 修复。
+
+把报错截图 + 修复代码写到 `docs/spring-pitfalls.md`。
 
 ## 交付物
 
-- [ ] 完成“完成 Spring Hello World”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `src/main/java/com/example/`：AppConfig + 3 个 Bean + 1 个 Aspect
+- [ ] `src/main/resources/application{,-dev,-prod}.properties`
+- [ ] `Main.java`：启动并输出 Bean 名 + 方法调用结果
+- [ ] `docs/spring-pitfalls.md`：2 个失败场景截图 + 修复
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 无字段注入 | grep `@Autowired` 应为空（构造器注入不用写）|
+| AOP 生效 | 日志里出现 `cost=xxx ms` |
+| Profile 生效 | `dev` 启动用 DevDataSource，`prod` 用 ProdDataSource |
+| 循环依赖修复 | 启动正常，文档有报错截图 |
+| 冲突修复 | 启动正常，文档有报错截图 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **手写迷你 IoC**：用 `Map<Class<?>, Object>` + 反射实现 50 行的简化 DI 容器，加深理解。
+2. **BeanPostProcessor**：写一个 `@Log` 注解 + 对应 BPP，标注方法自动打出入参。
+3. **Spring vs Boot 对比**：完成本章后迁到 Boot，记录「哪些配置消失了 / 哪些自动完成了」。
+4. **@Conditional**：写一个 `@ConditionalOnProperty(name="feature.sms", havingValue="true")` 的 SmsService Bean，关闭时自动替换为 NoopSmsService。

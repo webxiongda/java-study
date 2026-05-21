@@ -1,40 +1,96 @@
-# Chapter 32 SpringBoot入门 - 项目任务
+# Chapter 32 Spring Boot 入门 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**写出第一个 REST API**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+用 Spring Boot 3.3.5 把 30 章的 `blog-dao` 模块接上 Web 层，跑出第一个可 curl 的 REST API，并把 Actuator 接起来让运维能探活。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **SpringBoot入门** 能力，不能只停留在知识点阅读。
+DAO 层已经就绪，缺的是 HTTP 入口。这一章重点是「把 Boot 的自动配置用起来，少写配置多写业务」。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Starter、自动配置、Controller、Service 的关键点。
-2. 实现或设计“写出第一个 REST API”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 Boot Parent
+
+```xml
+<parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+</parent>
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+</dependencies>
+```
+
+### Step 2：主类 + application.yml
+
+主类放到 `com.example.blog.BlogApplication`（确保所有子包都在主类包下）。
+
+`application.yml` 最小配置：server.port / datasource / mybatis / actuator 端点。
+
+### Step 3：第一个 Controller
+
+```
+GET  /api/posts            列表（keyset 分页）
+POST /api/posts            发布文章
+GET  /api/posts/{id}       详情
+```
+
+curl 验证全部 3 个接口，用 `Content-Type: application/json`。
+
+### Step 4：自定义 HealthIndicator
+
+写 `DbHealthIndicator`（按 03-check Q4 写法），访问 `/actuator/health` 看到 `components.db.status=UP`。
+
+### Step 5：自动配置报告
+
+```bash
+java -jar blog.jar --debug 2>&1 | grep -E "(Matched|Did not match)" | head -30
+```
+
+截图贴到 `docs/autoconfig-report.md`，标注：
+
+- `DataSourceAutoConfiguration` 为何匹配
+- 哪个配置类帮你配了 Jackson
+- `MyBatisAutoConfiguration` 激活条件
+
+### Step 6：关掉一个自动配置再验证
+
+临时排除 `DataSourceAutoConfiguration`，启动报错截图 → 恢复 → 启动正常。
+
+写到 `docs/disable-autoconfig.md`。
 
 ## 交付物
 
-- [ ] 完成“写出第一个 REST API”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `BlogApplication.java`
+- [ ] `application.yml` + `application-dev.yml`
+- [ ] `controller/PostController.java`（3 个接口）
+- [ ] `DbHealthIndicator.java` + 单测
+- [ ] `docs/autoconfig-report.md`
+- [ ] `docs/disable-autoconfig.md`
+- [ ] curl 验证截图（3 接口 + `/actuator/health`）
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 3 个接口可 curl | 返回正确 JSON，无 500 |
+| `/actuator/health` | `{"status":"UP","components":{"db":{...}}}` |
+| 主类包路径 | grep `@SpringBootApplication` 在最顶层包 |
+| 无多余 @Bean DataSource | 由 Boot 自动配置 HikariCP |
+| Fat JAR 可启动 | `java -jar target/blog-*.jar` 正常起 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **分层打包**：开 `spring-boot-maven-plugin` 的 `layers`，让 Docker 镜像增量构建。
+2. **GraalVM Native**：试着 `mvn -Pnative native:compile`，对比 JVM 启动时间。
+3. **Micrometer + Prometheus**：加 `spring-boot-starter-actuator` + Prometheus 依赖，用 `docker run prom/prometheus` 拉 metrics 画图。
+4. **优雅停机**：配 `server.shutdown=graceful + spring.lifecycle.timeout-per-shutdown-phase=30s`，kill -15 观察是否等待请求完成。

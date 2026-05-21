@@ -1,67 +1,176 @@
-# Chapter 24 JDBC入门 - 理论篇
+# Chapter 24 JDBC 入门 - 理论篇
 
 ## 一、学习定位
 
-本章主题是 **JDBC入门**，核心内容包括：Driver、Connection、PreparedStatement、连接释放。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+JDBC 是 Java 操作数据库的最底层 API——后面 MyBatis / Spring Data 都是它的封装。理解 JDBC 才能看懂连接池、事务、SQL 注入这些"高级问题"的本质。
 
 - 优先级：L1 必须掌握
-- 预计投入：4小时
-- 阶段产出：用原生 JDBC 完成 CRUD
+- 预计投入：3 小时
+- 阶段产出：用裸 JDBC 写一份 `UserDao`，能 CRUD + 防 SQL 注入
 
 ## 二、核心概念
 
-### 1. 表结构
+### 1. 五大核心对象
 
-理解 表结构 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```
+DriverManager → Connection → Statement / PreparedStatement → ResultSet
+                     ↓
+                  事务管理（commit / rollback）
+```
 
-### 2. 约束
+| 对象 | 职责 | 必须关闭 |
+|------|-----|---------|
+| `DriverManager` | 根据 URL 找驱动，建连接 | 否（工厂类） |
+| `Connection` | 一次会话；事务的边界 | ✅ |
+| `Statement` | 执行 SQL（拼字符串，**有注入风险**） | ✅ |
+| `PreparedStatement` | 预编译 SQL（参数化，**唯一推荐**） | ✅ |
+| `ResultSet` | 查询结果游标 | ✅ |
 
-理解 约束 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+### 2. 连接 URL 与驱动
 
-### 3. 索引
+```java
+String url = "jdbc:mysql://localhost:3306/blog?useSSL=false&serverTimezone=UTC&characterEncoding=utf8";
+String user = "root";
+String password = "...";
+Connection conn = DriverManager.getConnection(url, user, password);
+```
 
-理解 索引 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+JDBC 4.0+ 不再需要 `Class.forName("com.mysql.cj.jdbc.Driver")`——`META-INF/services/java.sql.Driver` 由驱动 jar 自动注册（SPI 机制）。
 
-### 4. 事务
+### 3. PreparedStatement vs Statement
 
-理解 事务 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```java
+// ❌ Statement：字符串拼接 → SQL 注入
+String sql = "SELECT * FROM users WHERE name='" + name + "'";
+// 如果 name = "x' OR '1'='1" → SELECT * FROM users WHERE name='x' OR '1'='1'
+// 整张表都泄漏！
+stmt.executeQuery(sql);
 
-### 5. 查询执行过程
+// ✅ PreparedStatement：参数化
+String sql = "SELECT * FROM users WHERE name = ?";
+PreparedStatement ps = conn.prepareStatement(sql);
+ps.setString(1, name);                     // 驱动负责转义
+ResultSet rs = ps.executeQuery();
+```
 
-理解 查询执行过程 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+**PreparedStatement 三大好处**：
+1. 防 SQL 注入（驱动转义参数）。
+2. 预编译——同一 SQL 多次执行只解析一次，DB 端 plan cache 命中。
+3. 类型安全（`setInt` / `setString` 编译期就报错）。
+
+### 4. 资源关闭与 try-with-resources
+
+```java
+String sql = "SELECT id, name FROM users WHERE id = ?";
+try (Connection conn = DriverManager.getConnection(url, u, p);
+     PreparedStatement ps = conn.prepareStatement(sql)) {
+    ps.setLong(1, id);
+    try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+            return new User(rs.getLong("id"), rs.getString("name"));
+        }
+    }
+}
+// 三个资源都会按 LIFO 顺序自动关闭
+return null;
+```
+
+**不关的后果**：Connection 句柄泄漏 → 连接池被掏空 → 全站 hang 死。
+
+### 5. 事务（Transaction）
+
+默认 `Connection` 是 **autoCommit=true**——每条 SQL 一个事务，立即生效。
+
+```java
+try (Connection conn = DriverManager.getConnection(url, u, p)) {
+    conn.setAutoCommit(false);             // 关闭自动提交
+    try {
+        ps1.executeUpdate();               // 扣款
+        ps2.executeUpdate();               // 加款
+        conn.commit();                     // 一起生效
+    } catch (SQLException e) {
+        conn.rollback();                   // 出错全回滚
+        throw e;
+    } finally {
+        conn.setAutoCommit(true);          // 还回连接池前还原
+    }
+}
+```
+
+**4 个隔离级别**（`conn.setTransactionIsolation(...)`）：
+
+| 级别 | 脏读 | 不可重复读 | 幻读 | MySQL 默认 |
+|------|------|----------|------|-----------|
+| READ_UNCOMMITTED | 可能 | 可能 | 可能 | ❌ |
+| READ_COMMITTED | 不可能 | 可能 | 可能 | ❌（Oracle 默认） |
+| REPEATABLE_READ | 不可能 | 不可能 | 可能（InnoDB 用 MVCC 实际也防住） | ✅ |
+| SERIALIZABLE | 不可能 | 不可能 | 不可能 | ❌（性能太差） |
+
+### 6. 连接池（HikariCP / Druid）
+
+裸 `DriverManager.getConnection` 每次开销 ~50ms。生产用**连接池**：连接预先建好放池，用完归还。
+
+```java
+HikariConfig cfg = new HikariConfig();
+cfg.setJdbcUrl(url);
+cfg.setUsername(user);
+cfg.setPassword(pwd);
+cfg.setMaximumPoolSize(20);
+cfg.setMinimumIdle(5);
+cfg.setConnectionTimeout(3000);            // 3s 拿不到连接就抛
+cfg.setIdleTimeout(600_000);
+cfg.setMaxLifetime(1_800_000);             // < 数据库的 wait_timeout
+
+DataSource ds = new HikariDataSource(cfg);
+try (Connection conn = ds.getConnection()) { /* ... */ }   // close 是归还，不是真关
+```
+
+Spring Boot 默认 HikariCP，配置：
+```yaml
+spring.datasource:
+  url: jdbc:mysql://...
+  username: root
+  password: xxx
+  hikari:
+    maximum-pool-size: 20
+    connection-timeout: 3000
+```
 
 ## 三、工作原理
 
-| 维度 | 要点 | 你需要能说清 |
-|---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 维度 | 要点 |
+|---|---|
+| 入口 | `DriverManager.getConnection(url)` 或 `dataSource.getConnection()` |
+| 配置 | URL 参数（`useSSL`、`rewriteBatchedStatements`、`serverTimezone`）+ 池参数 |
+| 执行 | `executeQuery` 走查询路径返回 ResultSet；`executeUpdate` 返回影响行数 |
+| 边界 | 连接泄漏、ResultSet 没关、自动提交关了忘记还原、批量插入没用 `addBatch` |
+| 验证 | 看 `SHOW PROCESSLIST` 当前连接数；DB 慢查询日志；HikariCP `metrics` |
 
 ## 四、项目使用场景
 
-在博客后端项目中，本章能力会服务于以下场景：
-
-- 完成“用原生 JDBC 完成 CRUD”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+- **第 28-29 章 MyBatis**：MyBatis 底层就是 JDBC + ResultSet ↔ Java 对象映射。
+- **第 35 章事务**：Spring `@Transactional` 本质是包了一层 `setAutoCommit(false) + commit/rollback`。
+- **第 39 章配置**：DataSource 通过 `application.yml` 注入。
+- **第 58 章性能**：批量插入用 `PreparedStatement#addBatch()` + `executeBatch()`，1000 倍提速。
 
 ## 五、常见问题与坑
 
 | 问题 | 后果 | 处理方式 |
 |---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| 字符串拼接 SQL | 注入漏洞 | 全部用 `?` 参数化 |
+| ResultSet 不关 | 游标泄漏 | try-with-resources 三层 |
+| `conn.close()` 后还想用 | `SQLException: closed` | 池化场景：close 是归还，别在 Service 里持有 |
+| 拿连接不还（业务异常吞了） | 池被掏空 → `Connection is not available, request timed out` | finally 关 / try-with-resources |
+| 跨连接做事务 | 事务隔离失败 | 同一事务必须用同一 Connection（Spring 用 ThreadLocal 绑） |
+| 时间字段时区错乱 | UTC 与 +8:00 串了 | URL 加 `serverTimezone=Asia/Shanghai`，统一存 UTC |
+| 批量插入不用 batch | 慢 100 倍 | `addBatch()` + `executeBatch()` + URL 加 `rewriteBatchedStatements=true` |
 
 ## 六、面试高频问题
 
-1. JDBC入门 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“用原生 JDBC 完成 CRUD”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+1. `Statement` 和 `PreparedStatement` 的区别？为什么后者能防 SQL 注入？
+2. JDBC 4.0 之后还需要 `Class.forName(driver)` 吗？为什么？
+3. `Connection.close()` 在连接池场景下做了什么？
+4. 描述一次 JDBC 查询的完整流程（连接、预编译、执行、读结果、关资源）。
+5. 怎么用 JDBC 做一次包含 2 条 update 的事务？
+6. HikariCP 的 `maximumPoolSize` 设多大合适？为什么不是越大越好？
+7. ResultSet 不关会有什么后果？

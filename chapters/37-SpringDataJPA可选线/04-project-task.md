@@ -1,40 +1,80 @@
-# Chapter 37 SpringDataJPA可选线 - 项目任务
+# Chapter 37 Spring Data JPA 可选线 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**整理 ORM 对比笔记**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+用 Spring Data JPA 实现 `Tag` 模块（与 MyBatis 共存），对比代码量 / 性能，产出一份选型决策报告。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **SpringDataJPA可选线** 能力，不能只停留在知识点阅读。
+博客项目主 ORM 是 MyBatis。但这不妨碍拿一个简单的模块做 JPA 对比实验，了解"如果用 JPA 会怎样"。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Entity、Repository、关联映射、MyBatis/JPA 对比 的关键点。
-2. 实现或设计“整理 ORM 对比笔记”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 JPA + 写 Entity
+
+```xml
+<dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+```
+
+写 `TagEntity`（@Entity / @Table / @Id / @GeneratedValue / @Column）。
+
+### Step 2：Repository 基础 CRUD
+
+`interface TagRepository extends JpaRepository<TagEntity, Long>`，实现：
+
+- `findById` / `findAll`（JPA 自带）
+- `findByName(String)`（方法名解析）
+- `search(String kw)`（@Query）
+
+### Step 3：Service + Controller
+
+- `POST /jpa/tags` 创建
+- `GET /jpa/tags?kw=xxx` 搜索
+- `GET /jpa/tags` 全部
+- `DELETE /jpa/tags/{id}` 删除
+
+MyBatis 的 Tag 接口仍然保留，新开 `/jpa/` 前缀做隔离，不冲突。
+
+### Step 4：对比实验
+
+写 `docs/jpa-vs-mybatis.md`，包括：
+
+| 对比项 | MyBatis | JPA |
+|-------|---------|-----|
+| "创建标签" 代码行数 | xx | xx |
+| "搜索标签" SQL 数 | 手写 1 行 | 方法名 1 行 |
+| 启动时间 | 无影响 | ±1 秒（Hibernate 实体扫描）|
+| 单测方式 | @MybatisTest + Testcontainers | @DataJpaTest + Testcontainers |
+
+### Step 5：N+1 演示 + 修复
+
+写一个 JOIN 查询取 Post + author，跑 `show-sql: true`，截图 N+1 日志。加 `@EntityGraph` 修复，截图 1 条 JOIN 日志。
+
+### Step 6：乐观锁演示
+
+在 `PostEntity` 加 `@Version`，写一个集成测试：两个线程并发 `UPDATE`，验证第二个抛 `OptimisticLockException`。
 
 ## 交付物
 
-- [ ] 完成“整理 ORM 对比笔记”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `entity/TagEntity.java`
+- [ ] `dao/TagRepository.java`
+- [ ] `service/TagJpaService.java`
+- [ ] `controller/TagJpaController.java`
+- [ ] `docs/jpa-vs-mybatis.md`
+- [ ] N+1 发生 + 修复截图各一张
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 4 个接口可 curl | `/jpa/tags` 前缀全部正常 |
+| show-sql 无 N+1 | 列表查询日志中只有 1 条 SELECT |
+| 对比文档有数据 | 代码行数 / SQL 数 / 启动时间有实测数值 |
+| 与 MyBatis 共存 | MyBatis 接口仍然 100% 通过 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **Specification 动态查询**：用 `JpaSpecificationExecutor` 实现标签的多条件动态查询（名称/时间/状态），对比 MyBatis `<where>`。
+2. **软删除**：JPA 的 `@SQLDelete` 注解实现逻辑删除，验证 `deleteById` 执行的是 UPDATE。
+3. **分页**：`Page<TagEntity>` 返回 `Pageable`，看 JPA 的 COUNT 查询效率。
+4. **复杂 JOIN**：用 JPA 写 "取某用户的所有文章 + 标签"（多对多），证明 JPA 能拼出复杂 SQL。

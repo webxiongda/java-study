@@ -1,53 +1,150 @@
-# Chapter 37 SpringDataJPA可选线 - 实操 Demo
+# Chapter 37 Spring Data JPA 可选线 - 实操 Demo
 
 ## Demo 目标
 
-完成一个围绕 **整理 ORM 对比笔记** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+用 Spring Data JPA 代替 MyBatis 做一个博客的 `Tag` 模块全 CRUD，对比两个 ORM 的代码量和心智负担。
 
-## 前置条件
+## 前置
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+- 32 章 Boot 应用可运行
+- MySQL blog 数据库已有 tag 表
 
-## 实操步骤
+## 一、引入依赖
 
-1. 创建本章练习分支或目录，名称包含 chapter-37。
-2. 根据“Entity、Repository、关联映射、MyBatis/JPA 对比”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：SpringDataJPA可选线 在博客项目中承担什么责任。
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-jpa</artifactId>
+</dependency>
+```
 
-## 示例代码
+配置：
 
-~~~java
-@RestController
-@RequestMapping("/api/articles")
-@RequiredArgsConstructor
-public class ArticleController {
-    private final ArticleService articleService;
+```yaml
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate          # 验证实体和表结构一致，不改表
+    show-sql: true                # 看 Hibernate 生成的 SQL
+    properties:
+      hibernate.format_sql: true
+```
 
-    @GetMapping("/{id}")
-    public ApiResponse<ArticleDetailResponse> detail(@PathVariable Long id) {
-        return ApiResponse.ok(articleService.getDetail(id));
+## 二、Entity
+
+```java
+@Entity
+@Table(name = "tag")
+@Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class TagEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false, unique = true, length = 32)
+    private String name;
+
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
+
+    @Column(name = "is_deleted")
+    @Builder.Default private Integer isDeleted = 0;
+}
+```
+
+## 三、Repository
+
+```java
+public interface TagRepository extends JpaRepository<TagEntity, Long> {
+    Optional<TagEntity> findByName(String name);
+    List<TagEntity> findByNameContaining(String kw);
+}
+```
+
+## 四、Service
+
+```java
+@Service @RequiredArgsConstructor
+public class TagService {
+    private final TagRepository tagRepository;
+
+    public TagEntity create(String name) {
+        if (tagRepository.findByName(name).isPresent()) {
+            throw new BusinessException("标签已存在: " + name);
+        }
+        return tagRepository.save(TagEntity.builder().name(name).createdAt(LocalDateTime.now()).build());
+    }
+
+    public List<TagEntity> search(String kw) {
+        return tagRepository.findByNameContaining(kw);
+    }
+
+    @Transactional
+    public void delete(Long id) {
+        tagRepository.findById(id).orElseThrow(() -> new NotFoundException("tag not found"));
+        tagRepository.deleteById(id);
     }
 }
-~~~
+```
 
-## 运行与验证
+## 五、验证
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+```bash
+curl -X POST http://localhost:8080/api/v1/tags \
+  -H "Content-Type: application/json" \
+  -d '{"name":"spring"}'
+# {"id":1,"name":"spring","createdAt":"..."}
 
-## 建议提交信息
+curl http://localhost:8080/api/v1/tags?kw=spr
+```
 
-~~~bash
-git add .
-git commit -m "chapter 37: SpringDataJPA可选线 demo"
-~~~
+## 六、N+1 演示
+
+```java
+@Entity
+public class PostEntity {
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private UserEntity author;
+}
+
+// 控制器
+@GetMapping("/posts/nplus1")
+public List<PostVO> nplus1() {
+    List<PostEntity> posts = postRepository.findAll();
+    for (PostEntity p : posts) {
+        System.out.println(p.getAuthor().getEmail());  // 每个触发一条 SELECT
+    }
+}
+```
+
+日志输出：
+
+```
+Hibernate: select p1_0.id,p1_0.title from post p1_0
+Hibernate: select u1_0.id,u1_0.email from user u1_0 where u1_0.id=?
+Hibernate: select u1_0.id,u1_0.email from user u1_0 where u1_0.id=?
+...
+```
+
+修法：加 `@EntityGraph("Post.author")`。
+
+## 七、失败场景：LazyInitializationException
+
+```java
+@GetMapping("/posts/{id}")
+public PostDTO get(@PathVariable Long id) {
+    PostEntity p = postRepository.findById(id).orElseThrow();
+    // 事务已结束时（Controller 层）访问懒加载字段
+    return new PostDTO(p.getId(), p.getAuthor().getEmail());  // ❌ lazy 初始化异常
+}
+```
+
+修法：Service 层 @Transactional 内提前获取，或 `JOIN FETCH`。
+
+## 提交建议
+
+```bash
+git add src/main/java/com/example/blog/jpa/
+git commit -m "chapter 37: JPA tag module + N+1 demo"
+```

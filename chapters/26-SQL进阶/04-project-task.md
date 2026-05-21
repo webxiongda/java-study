@@ -1,40 +1,98 @@
-# Chapter 26 SQL进阶 - 项目任务
+# Chapter 26 SQL 进阶 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**完成 10 道 SQL 查询练习**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+为博客库做一次**完整的慢 SQL 治理 + 索引设计 review**，产出一份可以发给团队 leader 的报告。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **SQL进阶** 能力，不能只停留在知识点阅读。
+`posts` 已经 100 万行、`comments` 已经 1000 万行，业务方反馈：
+
+- 首页"最新文章"分页第 1000 页打开要 6 秒。
+- 后台"按用户筛选评论"经常超时。
+- 偶尔出现 `Lock wait timeout` 报错。
+
+你的任务：定位 → 优化 → 写报告 + 死锁治理 + 索引精简。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 JOIN、聚合、分页、事务、执行计划入门 的关键点。
-2. 实现或设计“完成 10 道 SQL 查询练习”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：开慢日志，跑一遍真实流量
+
+```sql
+SET GLOBAL slow_query_log = 'ON';
+SET GLOBAL long_query_time = 0.1;
+```
+
+跑 25 章项目里的 8 个核心查询 + 故意构造 3 个慢 SQL（深分页、函数失效、LIKE 前模糊）。
+
+跑完用 `pt-query-digest` 汇总到 `docs/slow-report.txt`，列出 Top 5。
+
+### Step 2：每个 Top 5 慢 SQL 做 EXPLAIN ANALYZE 前后对比
+
+对每条慢 SQL 输出：
+
+| SQL | 原 EXPLAIN | 优化手段 | 新 EXPLAIN | 耗时变化 |
+|-----|-----------|---------|-----------|---------|
+| SELECT … WHERE YEAR(created_at)=2024 | type=ALL rows=1M | 改成范围 | type=range rows=27K | 4800 ms → 28 ms |
+
+写到 `docs/sql-optimize.md`。
+
+### Step 3：索引精简
+
+```sql
+-- 列出当前所有索引
+SELECT TABLE_NAME, INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS cols
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = 'blog'
+GROUP BY TABLE_NAME, INDEX_NAME;
+
+-- 找重复/冗余索引
+pt-duplicate-key-checker --host=localhost --user=root --ask-pass
+```
+
+写出至少 1 个"该删的索引"、1 个"该加的索引"，附理由。
+
+### Step 4：死锁复现 + 治理
+
+照 02-demo 第三节复现一次死锁，把 `SHOW ENGINE INNODB STATUS` 的 `LATEST DETECTED DEADLOCK` 段贴到 `docs/deadlock-case.md`。
+
+给出**3 条**预防规则（按 id 升序、缩短事务、加合适索引），每条配一行代码示例。
+
+### Step 5：覆盖索引 + keyset 分页改造
+
+把"首页最新文章分页" API 改成：
+
+```sql
+-- 老
+SELECT id, title, summary FROM posts WHERE status=1 ORDER BY id DESC LIMIT 100000,10;
+
+-- 新
+SELECT id, title, summary FROM posts WHERE status=1 AND id < :lastId ORDER BY id DESC LIMIT 10;
+```
+
+加联合索引 `(status, id, title, summary)` 让它走覆盖索引 + keyset。EXPLAIN 应该是 `type=range, Extra=Using index`。
 
 ## 交付物
 
-- [ ] 完成“完成 10 道 SQL 查询练习”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `docs/slow-report.txt`：pt-query-digest 汇总
+- [ ] `docs/sql-optimize.md`：Top 5 慢 SQL 前后 EXPLAIN + 耗时对比
+- [ ] `docs/index-review.md`：当前索引清单 + 增删建议
+- [ ] `docs/deadlock-case.md`：死锁日志 + 预防规则
+- [ ] `db/migration/V26__optimize_index.sql`：实际执行的 DDL
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| Top 5 慢 SQL 全部消失 | 再跑一轮，pt-query-digest 头部换人 |
+| 首页分页 P99 | < 50 ms（不论翻到第几页） |
+| 死锁可解释 | 报告里写清环路 + 谁被回滚 + 为什么 |
+| 索引数 | 单表二级索引 ≤ 6 |
+| 没有 Using filesort/temporary | 8 个核心查询 EXPLAIN 通过 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **MVCC 实验**：开 2 个会话，分别在 RC / RR 下跑同样的 `SELECT → 对方 UPDATE → 再 SELECT`，截图证明 RR 看到的是旧值。
+2. **Online DDL**：用 `ALGORITHM=INPLACE, LOCK=NONE` 加索引，观察对在线写入的影响（用 `sysbench` 同时压一下）。
+3. **物化视图**：把 Top 3 的统计 SQL（如"每用户评论数"）做成定时任务写到 `user_stat` 表，OLTP 不再实时聚合。
+4. **EXPLAIN 自动化**：写一段 CI 脚本，遍历 `src/main/resources/mapper/*.xml` 抽出 SQL → 自动 `EXPLAIN` → 出现 `type=ALL` 就让 CI 红。

@@ -2,39 +2,98 @@
 
 ## 任务概述
 
-本章项目任务是：**实现标准错误响应**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+给博客 API 套上"防弹衣"：Bean Validation 阻止脏数据进 Service；全局异常处理器把任何错误转成结构化 JSON；自定义注解处理业务相关格式。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **参数校验与异常处理** 能力，不能只停留在知识点阅读。
+32-33 章的接口还没有校验——传空 title、负 id、非法邮箱全都进了 Service，随机触发 NPE 或 DB 报错。这一章做完后，所有边界都在边界上拦截，Service 里不再做防御性 null 判断。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Validation、全局异常处理、错误码设计 的关键点。
-2. 实现或设计“实现标准错误响应”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 Validation Starter
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
+```
+
+### Step 2：给所有 Request DTO 加注解
+
+- `PostCreateReq.title`：`@NotBlank @Size(max=200)`
+- `PostCreateReq.content`：`@NotBlank`
+- `CommentCreateReq.content`：`@NotBlank @Size(max=1000)`
+- `RegisterReq`：`@Email`、`@PhoneNumber`（自定义）、密码强度 Pattern
+- 分页参数：`@Min(0) lastId`、`@Min(1) @Max(50) size`
+
+### Step 3：全局异常处理器
+
+写 `GlobalExceptionHandler`（`@RestControllerAdvice`），处理：
+
+| 异常 | HTTP 状态 | 响应体 |
+|------|---------|--------|
+| `MethodArgumentNotValidException` | 400 | `{code:400, msg:"field: xxx", data:null}` |
+| `ConstraintViolationException` | 400 | 同上（query param 校验） |
+| `NotFoundException` | 404 | 404 |
+| `ForbiddenException` | 403 | 403 |
+| `BusinessException` | 422 | 422 |
+| `Exception` | 500 | 通用提示，错误 log |
+
+### Step 4：自定义 `@PhoneNumber` 注解
+
+按 03-check Q4 实现，配单测（合法 + 非法 + null）。
+
+### Step 5：注册接口校验
+
+新增 `POST /api/v1/auth/register`：
+
+- 邮箱/手机二选一（类级别自定义注解 `@AtLeastOneContact`）
+- 密码 8 位含大小写数字
+- 密码确认一致（Service 层校验）
+- 邀请码可选，有就校验（Service 查库，不存在抛 404）
+
+### Step 6：单测
+
+```java
+@WebMvcTest(PostController.class)
+class PostControllerTest {
+    @MockBean PostService postService;
+
+    @Test void create_should_return_400_when_title_blank() throws Exception {
+        mvc.perform(post("/api/v1/posts")
+              .contentType(APPLICATION_JSON)
+              .content("{\"title\":\"\",\"content\":\"body\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.code").value(400));
+    }
+}
+```
+
+每个校验规则写 1 个 `@Test`，全部断言 HTTP status 正确。
 
 ## 交付物
 
-- [ ] 完成“实现标准错误响应”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] 所有 Request DTO 加完校验注解
+- [ ] `GlobalExceptionHandler.java`（覆盖 6 类异常）
+- [ ] `@PhoneNumber` 注解 + Validator + 单测
+- [ ] `@AtLeastOneContact` 类级别注解
+- [ ] `POST /api/v1/auth/register` 完整校验
+- [ ] `PostControllerTest.java`：≥ 8 个单测（校验 + 成功路径）
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 空 title → 400 | `{"code":400,"msg":"title: title 不能为空"}` |
+| 不存在 id → 404 | `{"code":404,"msg":"post not found: 999"}` |
+| Service 异常 → 500 | `{"code":500,"msg":"系统繁忙"}`（不泄漏堆栈）|
+| 单测全绿 | `mvn test`，`@WebMvcTest` 快速验证 |
+| 无防御性 null 判断 | grep `!= null` 在 Service 层应趋近于零 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **国际化错误消息**：把校验错误 message 放 `messages.properties`，实现中英文切换。
+2. **Problem Details（RFC 9457）**：Spring 6 的 `ProblemDetail`，返回标准化错误体（带 `type` / `title` / `instance`）。
+3. **参数篡改检测**：自定义过滤器检测请求体里有无 HTML 标签（XSS 防护），过滤或拒绝。
+4. **接口限流**：`@RateLimit(perMinute=30)` 自定义注解 + AOP + Redis 计数，超限返回 429。

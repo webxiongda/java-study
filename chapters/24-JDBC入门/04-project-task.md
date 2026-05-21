@@ -1,40 +1,71 @@
-# Chapter 24 JDBC入门 - 项目任务
+# Chapter 24 JDBC 入门 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**用原生 JDBC 完成 CRUD**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
-
-## 业务背景
-
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **JDBC入门** 能力，不能只停留在知识点阅读。
+为 `blog-api` 引入 MySQL + HikariCP，写一个**裸 JDBC 版 UserDao**（不引 MyBatis），跑通 CRUD + 事务 + 批量。这是后续 MyBatis / 事务章节的基础对照。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Driver、Connection、PreparedStatement、连接释放 的关键点。
-2. 实现或设计“用原生 JDBC 完成 CRUD”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：起 MySQL
+
+```bash
+# 用 Docker 起一个本地 MySQL
+docker run --name blog-mysql \
+  -e MYSQL_ROOT_PASSWORD=root \
+  -e MYSQL_DATABASE=blog \
+  -p 3306:3306 -d mysql:8.4
+```
+
+### Step 2：建表
+
+在 `src/main/resources/db/schema.sql` 写建表脚本（见 `02-demo.md`），手动执行或用 Flyway。
+
+### Step 3：配置 + 加依赖
+
+按 `02-demo.md` 改 `pom.xml`、`application.yml`。
+
+### Step 4：写 `UserDao`
+
+实现：`insert / findById / findByEmail / listAll / updateName / delete / bulkInsert / renameTwoUsers(事务)`。
+
+### Step 5：写测试
+
+- `findById` 找不到返回 `Optional.empty()`
+- `insert` 返回自增 id
+- `renameTwoUsers` 第二个不存在时第一个**不被改动**
+- `bulkInsert` 10 万条 < 2 秒
+
+测试可以用 Testcontainers（推荐）或本地 MySQL。
+
+### Step 6：监控连接池
+
+打开 Spring Boot Actuator：
+
+```yaml
+management.endpoints.web.exposure.include: health,metrics,hikari
+```
+
+访问 `http://localhost:8080/actuator/metrics/hikaricp.connections.active` 看活跃连接数。
 
 ## 交付物
 
-- [ ] 完成“用原生 JDBC 完成 CRUD”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `db/schema.sql`、`application.yml`、`pom.xml` 更新
+- [ ] `dao/UserDao.java`（全 JDBC，无 ORM）
+- [ ] `dao/UserDaoTest.java`（覆盖 CRUD + 事务回滚 + 批量性能）
+- [ ] 一份 SQL 注入演示文档：贴出 `Statement` 版与 `PreparedStatement` 版的对照实验
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|-----|
+| 全部 SQL 用 `?` 占位 | grep 不到字符串拼接 SQL |
+| 资源关闭 | 全部 try-with-resources |
+| 事务行为 | 单元测试覆盖 commit / rollback 两种路径 |
+| 批量性能 | 10 万行 ≤ 2 秒（开启 `rewriteBatchedStatements`） |
+| 连接归还 | 跑完压测 `hikaricp.connections.active` 回到 0 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **慢查询发现**：把 HikariCP 的 `dataSource.queryTimeout` 设成 1 秒，故意写个 `SELECT SLEEP(2)` 看异常。
+2. **连接泄漏检测**：把 `leakDetectionThreshold` 设 5000 ms，故意写一段拿连接不归还的代码，看日志告警。
+3. **改成 JdbcTemplate**：用 Spring 的 `JdbcTemplate` / `NamedParameterJdbcTemplate` 重写一遍，对比代码量——这就是 MyBatis 之前的中间形态。

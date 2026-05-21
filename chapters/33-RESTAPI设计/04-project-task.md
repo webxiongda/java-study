@@ -1,40 +1,86 @@
-# Chapter 33 RESTAPI设计 - 项目任务
+# Chapter 33 REST API 设计 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**制定博客 API 规范**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+把博客的 CRUD 从"能跑"升级到"符合 RESTful 规范"：正确的 HTTP 方法、状态码、统一响应、keyset 分页、版本化路径。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **RESTAPI设计** 能力，不能只停留在知识点阅读。
+32 章写的接口只是"能跑"，但路径、状态码、响应格式都没规范。这一章做一次「API 大扫除」，产出一份可以发给前端同学的接口文档。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 资源命名、状态码、DTO、统一响应、版本化 的关键点。
-2. 实现或设计“制定博客 API 规范”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：统一响应结构
+
+```java
+// common 模块
+public record Result<T>(int code, String msg, T data) {
+    public static <T> Result<T> ok(T data) { return new Result<>(0, "ok", data); }
+    public static Result<?> error(int code, String msg) { return new Result<>(code, msg, null); }
+}
+
+public record PageResult<T>(List<T> items, Long nextLastId, boolean hasMore) {}
+```
+
+把所有 Controller 的返回类型改为 `Result<XxxVO>`。
+
+### Step 2：资源路径整改
+
+按以下规范改路径：
+
+| 操作 | 改前（乱） | 改后（规范）|
+|------|----------|------------|
+| 查列表 | `GET /postList` | `GET /api/v1/posts` |
+| 发文章 | `POST /createPost` | `POST /api/v1/posts` |
+| 改状态 | `POST /changeStatus` | `PATCH /api/v1/posts/{id}/status` |
+| 删文章 | `GET /deletePost?id=1` | `DELETE /api/v1/posts/{id}` |
+| 发评论 | `POST /addComment` | `POST /api/v1/posts/{id}/comments` |
+
+### Step 3：状态码
+
+- 创建 → 201
+- 成功无内容（删除）→ 204
+- 资源不存在 → 404
+- 参数错误 → 400
+
+所有 HTTP 状态码不能全返回 200。
+
+### Step 4：keyset 分页
+
+把所有 `page/size` OFFSET 分页改成 `lastId/size` keyset 分页，Service 层改 SQL（28-29 章的 XML 已有），Controller 把 nextLastId 放到响应里。
+
+### Step 5：curl 验证脚本
+
+写 `scripts/api-test.sh`，覆盖所有接口（列表 / 详情 / 创建 / 改状态 / 删除 / 发评论），每个用 jq 检查 `code == 0` 且关键字段存在。
+
+### Step 6：错误路径测试
+
+在脚本里加：
+
+- 请求不存在的文章 → 断言 HTTP 404
+- 传非法 size=999 → 断言 HTTP 400
 
 ## 交付物
 
-- [ ] 完成“制定博客 API 规范”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `common/Result.java` + `common/PageResult.java`
+- [ ] `PostController.java`（6 个接口，路径全规范）
+- [ ] `CommentController.java`（3 个接口）
+- [ ] `scripts/api-test.sh`：全接口 curl 验证脚本
+- [ ] `docs/api-design.md`：接口设计决策记录（为什么用 PATCH 不用 PUT）
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 路径全是名词 | grep `@GetMapping` 无动词（list/create/delete）|
+| 状态码正确 | 创建 201，删除 204，不存在 404 |
+| 统一响应 | 所有接口返回 `{"code":0,"msg":"ok","data":{...}}` |
+| keyset 分页 | 响应含 nextLastId + hasMore，无 page/offset |
+| 错误路径 | 404 / 400 有标准 JSON 错误体 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **API 版本策略**：实现 v1/v2 两个版本的同一接口共存，v2 新增 `summary` 字段，v1 不变。
+2. **ETag 缓存**：文章详情接口加 `ETag`，二次请求走 `If-None-Match` 返回 304。
+3. **限速**：用 Bucket4j 给搜索接口加每分钟 30 次限速，超出返回 429。
+4. **HATEOAS**：给文章详情加 `_links: {self, comments, author}`，用 Spring HATEOAS 实现。

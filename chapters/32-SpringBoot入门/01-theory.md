@@ -1,67 +1,189 @@
-# Chapter 32 SpringBoot入门 - 理论篇
+# Chapter 32 Spring Boot 入门 - 理论篇
 
 ## 一、学习定位
 
-本章主题是 **SpringBoot入门**，核心内容包括：Starter、自动配置、Controller、Service。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+31 章把 Spring 的原始面貌看清楚了；Boot 是在 Spring 上套了一层"自动化"——**自动配置 + Starter + 内嵌服务器 + Actuator**。理解 Boot = 理解"它帮你省了哪些配置，以及你怎么覆盖这些配置"。
 
-- 优先级：L1 必须掌握
-- 预计投入：4小时
-- 阶段产出：写出第一个 REST API
+- 优先级：L1
+- 预计投入：4 小时
+- 阶段产出：一个最小 Boot 应用 + `/health` Actuator + 一个 REST 接口可 curl
 
 ## 二、核心概念
 
-### 1. 自动配置
+### 1. Spring Boot 帮你做了什么
 
-理解 自动配置 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+| Boot 之前（手写） | Boot 之后（自动） |
+|----------------|----------------|
+| `new AnnotationConfigApplicationContext()` | `SpringApplication.run()` |
+| `@ComponentScan("com.example")` | 主类所在包自动扫描 |
+| 手配 `DispatcherServlet` + Tomcat | 内嵌 Tomcat，启动即可用 |
+| 手配 `DataSource` + `SqlSessionFactory` | 引入 starter，配 URL 就够 |
+| 手写 `application.properties` 每个 key | Starter 提供带默认值的绑定 |
+| 手配 Jackson / 参数校验 / Actuator | 自动配置 |
 
-### 2. Starter
+### 2. 核心注解
 
-理解 Starter 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```java
+@SpringBootApplication
+= @SpringBootConfiguration    // 就是 @Configuration
++ @EnableAutoConfiguration    // 关键：加载自动配置
++ @ComponentScan              // 从主类包开始扫
+```
 
-### 3. 分层架构
+**主类位置**：必须放在所有子包的上层，否则部分类扫不到。
 
-理解 分层架构 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```
+com.example.blog/
+├── BlogApplication.java     ← 主类（最顶层包）
+├── controller/
+├── service/
+└── dao/
+```
 
-### 4. 配置管理
+### 3. 自动配置原理
 
-理解 配置管理 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+Boot 在 `spring-boot-autoconfigure.jar` 里预置了几百个 `@Configuration` 类：
 
-### 5. 运行入口
+```
+DataSourceAutoConfiguration
+MyBatisAutoConfiguration
+JacksonAutoConfiguration
+SpringMvcAutoConfiguration
+...
+```
 
-理解 运行入口 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+触发条件：`@ConditionalOnClass`、`@ConditionalOnMissingBean`、`@ConditionalOnProperty` 等。
+
+```java
+@Configuration
+@ConditionalOnClass(HikariDataSource.class)     // classpath 有 HikariCP
+@ConditionalOnMissingBean(DataSource.class)     // 你自己没配 DataSource
+class DataSourceAutoConfiguration {
+    @Bean DataSource dataSource() { /* 用 spring.datasource.* 属性初始化 */ }
+}
+```
+
+**查看自动配置**：`--debug` 模式启动，看 `CONDITIONS EVALUATION REPORT`。
+
+### 4. Starter
+
+Starter 就是一组依赖 + 一个或多个自动配置。引入一个 starter 就等于"我要这个功能"。
+
+| Starter | 带来什么 |
+|---------|---------|
+| `spring-boot-starter-web` | Tomcat + Spring MVC + Jackson |
+| `spring-boot-starter-data-jpa` | Hibernate + DataSource + Tx |
+| `mybatis-spring-boot-starter` | SqlSessionFactory + Mapper 扫描 |
+| `spring-boot-starter-actuator` | 健康检查 + 指标 + Info |
+| `spring-boot-starter-test` | JUnit 5 + Mockito + AssertJ |
+
+### 5. 配置绑定
+
+```yaml
+# application.yml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost/blog
+    username: root
+    password: ${DB_PASSWORD}    # 环境变量注入
+
+blog:
+  upload:
+    max-size: 5MB
+    allowed-types: jpg,png,gif
+```
+
+**类型安全绑定**：
+
+```java
+@ConfigurationProperties(prefix = "blog.upload")
+@Component
+public record UploadProperties(String maxSize, String allowedTypes) {}
+```
+
+**配置优先级**（高覆盖低）：
+
+```
+命令行参数 > 环境变量 > application-{profile}.yml > application.yml > @PropertySource > 默认值
+```
+
+### 6. 内嵌 Tomcat 与打包
+
+```bash
+mvn package              # 生成 target/blog-0.0.1.jar
+java -jar blog-0.0.1.jar  # 内嵌 Tomcat 启动，端口 8080
+```
+
+Fat JAR：把所有依赖打进一个 JAR，任何装了 JDK 的机器都能直接跑。
+
+**换服务器**：去掉 Tomcat，加 Undertow：
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-web</artifactId>
+    <exclusions>
+        <exclusion><groupId>org.springframework.boot</groupId>
+                   <artifactId>spring-boot-starter-tomcat</artifactId></exclusion>
+    </exclusions>
+</dependency>
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-undertow</artifactId>
+</dependency>
+```
+
+### 7. Actuator
+
+```yaml
+management:
+  endpoints.web.exposure.include: health,info,metrics,env
+  endpoint.health.show-details: always
+```
+
+| 端点 | 含义 |
+|------|------|
+| `/actuator/health` | 应用 + 组件健康状态 |
+| `/actuator/info` | 版本、git commit 等 |
+| `/actuator/metrics` | JVM、HTTP、DataSource 指标 |
+| `/actuator/env` | 当前所有配置项（含来源）|
+| `/actuator/beans` | 容器里所有 Bean |
+
+**生产上 Actuator 必须鉴权**：见 44 章 Spring Security。
 
 ## 三、工作原理
 
-| 维度 | 要点 | 你需要能说清 |
-|---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 维度 | 要点 |
+|---|---|
+| 入口 | `SpringApplication.run()` → 环境准备 → 刷新 ApplicationContext → 内嵌服务器 |
+| 配置 | `spring-boot-autoconfigure/META-INF/spring/...imports` 列出所有自动配置类 |
+| 执行 | Condition 评估 → 有条件地注册 Bean → 启动 DispatcherServlet |
+| 边界 | 自动配置冲突、classpath 版本冲突、配置覆盖顺序 |
+| 验证 | `--debug` 启动看自动配置报告；`/actuator/beans` 看容器 |
 
-## 四、项目使用场景
+## 四、在博客项目里的落点
 
-在博客后端项目中，本章能力会服务于以下场景：
+- 主类 `BlogApplication` 在 `com.example.blog` 顶层包。
+- 所有配置在 `application.yml`，Profile 区分 dev/test/prod。
+- Actuator 只暴露 health + info 给负载均衡器探活（其余鉴权保护）。
+- Fat JAR → Docker 镜像（57 章）。
 
-- 完成“写出第一个 REST API”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+## 五、常见坑
 
-## 五、常见问题与坑
-
-| 问题 | 后果 | 处理方式 |
-|---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| 现象 | 原因 | 修法 |
+|------|------|------|
+| Bean 找不到 | 主类不在最顶层包 | 移动主类或加 `@ComponentScan` |
+| 多数据源配置冲突 | 自动配置和手动 Bean 冲突 | `@ConditionalOnMissingBean` 或加 `@Primary` |
+| 端口冲突 8080 | 本地有别的服务 | `server.port=8081` |
+| Fat JAR 太大 | 所有依赖打进去 | 分层打包（`layers.enabled=true`）|
+| 环境变量被 log 暴露 | `/actuator/env` 未保护 | Security 拦截 Actuator |
 
 ## 六、面试高频问题
 
-1. SpringBoot入门 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“写出第一个 REST API”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+1. Spring Boot 自动配置的原理？`@ConditionalOnXxx` 如何工作？
+2. Starter 是什么？自己写一个 Starter 需要哪些步骤？
+3. `@SpringBootApplication` 由哪 3 个注解组成？
+4. Spring Boot 的 Fat JAR 和普通 JAR 的区别？
+5. `application.yml` 和 `application-prod.yml` 的关系？优先级如何？
+6. Actuator 的 health 端点如何自定义 HealthIndicator？
+7. 如何关掉某个自动配置？

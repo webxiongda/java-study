@@ -1,0 +1,15 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: java-study-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: java_study_root
+      MYSQL_DATABASE: java_study
+    ports:
+      - "3306:3306"
+    volumes:
+      - java-study-mysql-data:/var/lib/mysql
+    command: ["mysqld", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+
+volumes:
+  java-study-mysql-data:

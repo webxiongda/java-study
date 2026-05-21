@@ -1,0 +1,33 @@
+{
+  "name": "java-study-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:up": "docker start java-study-mysql || docker run --name java-study-mysql -e MYSQL_ROOT_PASSWORD=java_study_root -e MYSQL_DATABASE=java_study -p 3306:3306 -v java-study-mysql-data:/var/lib/mysql -d mysql:8.4 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci",
+    "db:down": "docker stop java-study-mysql",
+    "dev": "concurrently \"mvn -f backend/pom.xml spring-boot:run\" \"vite --host 0.0.0.0\"",
+    "backend": "mvn -f backend/pom.xml spring-boot:run",
+    "server": "mvn -f backend/pom.xml spring-boot:run",
+    "client": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "check": "tsc -b"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vite": "^7.1.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,49 +1,228 @@
-# Chapter 30 里程碑：博客DAO层 - 实操 Demo
+# Chapter 30 里程碑：博客 DAO 层 - 实操 Demo
 
 ## Demo 目标
 
-完成一个围绕 **交付博客数据访问层 v1** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+从 0 到「能跑、能测、能 review」搭出 `blog-dao` 模块，包含：
 
-## 前置条件
+- 5 实体 + 5 Mapper（接口 + XML）+ 3 Service
+- Flyway 自动建表
+- Testcontainers MySQL 跑集成测试
+- JaCoCo 输出覆盖率报告
+- 一份「8 个核心查询 EXPLAIN 通过」截图
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 可在普通 Maven 项目中完成。
+## 前置
 
-## 实操步骤
+- Chapter 21 已建 Maven baseline；27 章 schema 已 ready
+- Docker 已装（Testcontainers 要用）
 
-1. 创建本章练习分支或目录，名称包含 chapter-30。
-2. 根据“JDBC/MyBatis/SQL 整合、README、测试”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：里程碑：博客DAO层 在博客项目中承担什么责任。
+## 一、模块结构
 
-## 示例代码
+```
+blog/
+├── pom.xml                       (parent)
+├── blog-dao/
+│   ├── pom.xml
+│   ├── src/main/java/com/example/blog/
+│   │   ├── entity/      (User, Post, Tag, PostTag, Comment)
+│   │   ├── dao/         (UserMapper, PostMapper, ...)
+│   │   └── service/     (UserService, PostService, CommentService)
+│   ├── src/main/resources/
+│   │   ├── mapper/      (*.xml)
+│   │   └── db/migration/V1__schema.sql
+│   └── src/test/java/   (集成测试)
+```
 
-~~~java
-@Mapper
-public interface ArticleMapper {
-    Article findById(Long id);
-    List<Article> findPublished(@Param("offset") int offset, @Param("limit") int limit);
-    int insert(Article article);
-    int updateStatus(@Param("id") Long id, @Param("status") String status);
+## 二、核心依赖
+
+`blog-dao/pom.xml`：
+
+```xml
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.mybatis.spring.boot</groupId>
+        <artifactId>mybatis-spring-boot-starter</artifactId>
+        <version>3.0.3</version>
+    </dependency>
+    <dependency>
+        <groupId>com.mysql</groupId>
+        <artifactId>mysql-connector-j</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-mysql</artifactId>
+    </dependency>
+
+    <!-- 测试 -->
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-test</artifactId>
+        <scope>test</scope>
+    </dependency>
+    <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>mysql</artifactId>
+        <version>1.20.4</version>
+        <scope>test</scope>
+    </dependency>
+</dependencies>
+```
+
+JaCoCo 插件：
+
+```xml
+<plugin>
+    <groupId>org.jacoco</groupId>
+    <artifactId>jacoco-maven-plugin</artifactId>
+    <version>0.8.12</version>
+    <executions>
+        <execution><goals><goal>prepare-agent</goal></goals></execution>
+        <execution><id>report</id><phase>test</phase><goals><goal>report</goal></goals></execution>
+        <execution>
+            <id>check</id><phase>test</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+                <rules><rule>
+                    <element>BUNDLE</element>
+                    <limits><limit>
+                        <counter>LINE</counter><value>COVEREDRATIO</value><minimum>0.70</minimum>
+                    </limit></limits>
+                </rule></rules>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+```
+
+## 三、Service 示例：发布文章
+
+```java
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class PostService {
+    private final PostMapper postMapper;
+    private final PostTagMapper postTagMapper;
+    private final UserMapper userMapper;
+
+    @Transactional
+    public Long publish(Long userId, PostCreateReq req) {
+        User author = userMapper.findById(userId);
+        if (author == null) throw new BusinessException("user not found");
+        if (author.getStatus() != 1) throw new BusinessException("user banned");
+
+        Post p = Post.builder()
+            .userId(userId)
+            .userName(author.getNickname())        // 反范式冗余
+            .title(req.getTitle())
+            .summary(req.getSummary())
+            .content(req.getContent())
+            .status(req.isPublish() ? 1 : 0)
+            .build();
+        postMapper.insert(p);                       // 自增回填 p.id
+
+        if (req.getTagIds() != null && !req.getTagIds().isEmpty()) {
+            postTagMapper.batchInsert(p.getId(), req.getTagIds());
+        }
+
+        log.info("post published id={} userId={} tags={}", p.getId(), userId, req.getTagIds());
+        return p.getId();
+    }
 }
-~~~
+```
 
-## 运行与验证
+## 四、Testcontainers 集成测试
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+```java
+@SpringBootTest
+@Testcontainers
+class PostServiceIT {
 
-## 建议提交信息
+    @Container
+    static MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0.36")
+        .withDatabaseName("blog").withUsername("root").withPassword("test");
 
-~~~bash
-git add .
-git commit -m "chapter 30: 里程碑：博客DAO层 demo"
-~~~
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", mysql::getJdbcUrl);
+        r.add("spring.datasource.username", mysql::getUsername);
+        r.add("spring.datasource.password", mysql::getPassword);
+    }
+
+    @Autowired PostService postService;
+    @Autowired UserMapper userMapper;
+
+    @Test @Transactional
+    void publish_should_insert_post_and_tags() {
+        Long uid = userMapper.insert(User.builder()
+            .email("a@x.com").nickname("A").password("xx").status(1).build());
+
+        Long pid = postService.publish(uid, new PostCreateReq("hello", "abc", "...", true, List.of(1L,2L)));
+
+        assertThat(pid).isPositive();
+        // 验证 tag 关联也写入
+    }
+
+    @Test @Transactional
+    void publish_should_throw_when_user_banned() {
+        Long uid = userMapper.insert(User.builder()
+            .email("b@x.com").nickname("B").password("xx").status(0).build());
+
+        assertThatThrownBy(() -> postService.publish(uid, new PostCreateReq("t","s","c",true,null)))
+            .hasMessageContaining("banned");
+    }
+}
+```
+
+## 五、跑通
+
+```bash
+cd blog-dao
+mvn clean verify
+# ... Flyway 自动建表
+# ... 25 个集成测试通过
+# ... JaCoCo: lines covered 78%
+# BUILD SUCCESS
+```
+
+打开 `target/site/jacoco/index.html` 看覆盖率热力图。
+
+## 六、EXPLAIN 验证
+
+跑 `db/explain.sql`：
+
+```sql
+EXPLAIN SELECT id, title FROM post
+WHERE user_id = 7 AND status = 1 ORDER BY created_at DESC LIMIT 10;
+-- type=ref, key=idx_user_status_time ✅
+```
+
+把 8 个核心查询的 EXPLAIN 结果贴到 `docs/explain.md`。
+
+## 七、失败场景：`@Transactional` 失效
+
+```java
+@Service
+public class BadService {
+    public void outer(Long uid) {
+        inner(uid);   // ❌ 类内调用，事务注解失效
+    }
+    @Transactional
+    public void inner(Long uid) {
+        userMapper.delete(uid);
+        throw new RuntimeException("boom");  // 数据竟然被删除了
+    }
+}
+```
+
+修法：把 `inner` 抽到另一个 Bean，或注入自己 (`@Autowired BadService self`)。
+
+## 提交建议
+
+```bash
+git add blog-dao/ docs/explain.md
+git commit -m "chapter 30 milestone: blog-dao module with 78% coverage + EXPLAIN-verified"
+```

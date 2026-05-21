@@ -1,40 +1,95 @@
-# Chapter 36 SpringBoot+MyBatis - 项目任务
+# Chapter 36 Spring Boot + MyBatis - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**完成博客后端 CRUD**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+把博客 API 的数据层从"裸 Boot + MyBatis"升级到"Boot + MyBatis-Plus + 读写分离 + @MybatisTest 单测"。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **SpringBoot+MyBatis** 能力，不能只停留在知识点阅读。
+28-30 章的 Mapper 都是手写 XML，功能 OK 但重复代码多。这一章引入 MP 处理单表 CRUD，复杂 SQL 保留 XML，并把读操作接入只读副本（或测试 slave 模拟）。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 数据源、Mapper 扫描、分页、事务整合 的关键点。
-2. 实现或设计“完成博客后端 CRUD”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 MyBatis-Plus
+
+替换 `mybatis-spring-boot-starter` 为 `mybatis-plus-spring-boot3-starter`，启动验证老 Mapper 仍正常。
+
+### Step 2：Entity 加 MP 注解
+
+给 `Post` / `User` / `Tag` / `Comment` 加：
+
+- `@TableName`
+- `@TableId(type=IdType.AUTO)`
+- `@TableLogic` 字段（is_deleted）
+- `@TableField(fill=FieldFill.INSERT)` createdAt / `INSERT_UPDATE` updatedAt
+
+写 `MetaObjectHandler` 实现自动填充时间戳。
+
+### Step 3：Mapper 继承 BaseMapper
+
+新建 `TagMapper extends BaseMapper<Tag>`（原来的手写 Mapper XML 也保留），验证两套 Mapper 共存。
+
+### Step 4：分页插件
+
+```java
+@Bean
+public MybatisPlusInterceptor mpInterceptor() {
+    var i = new MybatisPlusInterceptor();
+    i.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+    i.addInnerInterceptor(new BlockAttackInnerInterceptor());
+    return i;
+}
+```
+
+用 `IPage<Post>` 实现后台管理分页（允许 OFFSET），前台 Feed 仍用 keyset XML。
+
+### Step 5：读写分离（简版）
+
+配 2 个数据源（开发环境可以 master / slave 指向同一个 MySQL，模拟配置）：
+
+- `find*` / `list*` / `count*` 方法 → slave
+- `insert` / `update` / `delete` → master
+
+AOP 自动路由（03-check Q4 方案），单测：
+
+```java
+@Test
+void read_goes_to_slave() {
+    postMapper.findAll();
+    assertThat(DataSourceHolder.get()).isEqualTo("SLAVE");
+}
+```
+
+### Step 6：@MybatisTest 单测
+
+不用 `@SpringBootTest`（慢），用 `@MybatisTest + @AutoConfigureTestDatabase(replace=NONE) + Testcontainers`：
+
+每个 Mapper ≥ 5 个测试用例，验证 MP 生成的 CRUD + 自定义 XML 方法都正确。
 
 ## 交付物
 
-- [ ] 完成“完成博客后端 CRUD”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `entity/` 加完 MP 注解
+- [ ] `TagMapper extends BaseMapper<Tag>`
+- [ ] `MetaObjectHandler.java`（自动填充时间）
+- [ ] `MybatisPlusInterceptor` Bean 配置
+- [ ] AOP 读写分离路由
+- [ ] `@MybatisTest` 单测（≥ 20 用例）
+- [ ] `docs/mybatis-vs-mp.md`：XML 手写 vs MP 对比（代码量 / 性能 / 可读性）
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 老 Mapper 不报错 | 所有原有集成测试通过 |
+| MP CRUD 可用 | `selectById/insert/updateById` 正常 |
+| 逻辑删除 | `deleteById` 实际执行 UPDATE is_deleted=1 |
+| 自动填充 | insert 后 createdAt / updatedAt 非空 |
+| 防全表更新 | 无 WHERE 的 update 被 BlockAttack 拦截 |
+| 读写路由 | find* 走 slave 配置 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **Mapper 自动生成**：用 MP 代码生成器 `FastAutoGenerator` 反向从 DB 生成所有 Mapper，对比人工写的差异。
+2. **动态 TableName**：`@InterceptorIgnore + DynamicTableNameInnerInterceptor` 实现按月分表（`post_202501` / `post_202502`）。
+3. **乐观锁**：`@Version int version` 字段 + `OptimisticLockerInnerInterceptor`，并发 update 验证只有一个成功。
+4. **数据权限**：自定义 `DataPermissionHandler`，用户只能查自己的文章（WHERE user_id = current_user_id 自动注入）。

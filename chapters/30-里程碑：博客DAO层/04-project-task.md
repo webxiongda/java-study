@@ -1,62 +1,134 @@
 # Chapter 30 里程碑：博客 DAO 层 - 项目任务
 
 > 前置：[[21-Maven工程化]] → [[29-MyBatis进阶]]
-> 这一站完成后，下一阶段（31-40）才接 Spring Boot Web。
 
 ## 任务概述
 
-用 MyBatis 实现博客系统的数据访问层 v1：表设计 + Mapper + 单元测试，**不依赖 Spring Boot Web**，保证 DAO 可独立验证。
+把第 21-29 章学到的全部技术拧成一个**可独立运行、可测试、可演示**的 `blog-dao` 模块。这是博客项目的第一个交付里程碑。
 
-## 量化验收
+## 业务背景
 
-### 一、数据库
+未来的 Service / Controller 都要建立在这层之上。这一章定下的代码风格、测试方式、命名规范，会影响后面 30 章。所以宁可慢一点，把基线做扎实。
 
-| # | 项 | 标准 |
-|---|---|---|
-| 1 | 表数量 | ≥ 5：user / article / tag / article_tag / comment |
-| 2 | 主键 | 全部 BIGINT AUTO_INCREMENT |
-| 3 | 索引 | 至少 3 个有意义的二级索引（author+status / tag / created_at） |
-| 4 | 字符集 | utf8mb4 + utf8mb4_unicode_ci（支持 emoji） |
-| 5 | DDL 文件 | `sql/init/001-schema.sql` 可重复执行（含 `DROP IF EXISTS`） |
-| 6 | 种子数据 | `sql/init/002-seed.sql` 至少 20 条文章 + 5 用户 + 10 标签 |
+## 任务拆解
 
-### 二、Mapper
+### Step 1：项目脚手架
 
-| # | 项 | 标准 |
-|---|---|---|
-| 7 | Mapper 接口 | 每张表一个，方法名见名知意（`selectById` / `insert` / `updateSelective` / `deleteById` / `search`） |
-| 8 | XML resultMap | 至少 2 个嵌套（article + author，article + tags） |
-| 9 | 动态 SQL | `<where>` + `<if>` + `<foreach>` 至少各用一次 |
-| 10 | 主键回填 | insert 后 `getId()` 非空 |
-| 11 | 枚举映射 | status 字段用 `EnumTypeHandler` |
-| 12 | 防注入 | 排序字段用白名单，禁止 `${userInput}` |
+- Maven 多模块：`blog/{blog-common, blog-dao, blog-web}`
+- `blog-common`：通用工具类（`Result`、`BusinessException`、`PageQuery`）
+- `blog-dao`：本章重点
+- 版本：JDK 21、Spring Boot 3.3.5、MyBatis 3.0.3、Flyway、Testcontainers
 
-### 三、测试
+### Step 2：实体与映射
 
-| # | 项 | 标准 |
-|---|---|---|
-| 13 | 单测 | 每个 Mapper ≥ 3 个测试（insert / select / search） |
-| 14 | 测试隔离 | 用 `@Transactional` + `@Rollback`（Spring Test）或 Testcontainers |
-| 15 | 覆盖 | jacoco mapper 包 ≥ 80% |
+5 个 Entity（与 27 章 v2 schema 完全对齐）：
 
-### 四、运行验证
-
-| # | 项 | 标准 |
-|---|---|---|
-| 16 | 启动 | `mvn test -Dtest=ArticleMapperTest` 全绿 |
-| 17 | SQL 日志 | 控制台可见每条执行 SQL（log-impl: stdout） |
-| 18 | 性能 | 列表分页 1w 条数据 < 100ms（带索引） |
-
-## 提交
-
-```bash
-git tag dao-v1
-git push origin dao-v1
+```java
+User { id, email, nickname, password, status, createdAt, updatedAt, isDeleted }
+Post { id, userId, userName, title, summary, content, status, viewCount, ... }
+Tag, PostTag, Comment
 ```
 
-## 复盘问题
+Lombok `@Data @Builder @NoArgsConstructor @AllArgsConstructor`。
 
-1. 列出所有表的字段 + 索引 + 关系图。
-2. `<resultMap>` 嵌套和两次查询拼接，分别在什么场景用？
-3. 哪个查询如果数据涨到 100w 行会变慢？怎么优化？
-4. 你最满意的一个 SQL 是哪个？为什么？
+### Step 3：Mapper 接口
+
+每个 Mapper 至少 6 方法：
+
+- `findById(id)`
+- `insert(entity)` （`useGeneratedKeys`）
+- `update(entity)` （按 id）
+- `softDelete(id)`
+- `pageXxx(query)` （keyset 分页）
+- `batchInsert(list)` （foreach）
+
+加 `PostMapper.searchByConditions(req)` 动态 SQL（29 章）。
+
+### Step 4：Service
+
+3 个 Service：
+
+- `UserService`：register（带密码加密占位） / banUser
+- `PostService`：publish / unpublish / search / detail（带 tag 列表）
+- `CommentService`：addComment / deleteThread / pageByPost
+
+每个方法都要：
+- `@Transactional`
+- 业务规则用 `BusinessException` 而非返回 null
+
+### Step 5：测试金字塔
+
+```
+test/
+├── unit/              # Mockito mock Mapper，跑 Service 业务分支
+│   ├── UserServiceTest.java
+│   ├── PostServiceTest.java
+│   └── CommentServiceTest.java
+└── integration/       # @SpringBootTest + Testcontainers
+    ├── UserMapperIT.java
+    ├── PostMapperIT.java
+    ├── PostServiceIT.java
+    └── ...
+```
+
+每个 Mapper 集成测试 ≥ 5 用例；每个 Service 单测 ≥ 5 用例。
+
+### Step 6：JaCoCo gate
+
+加 JaCoCo 插件，覆盖率 < 70% 则 `mvn verify` 失败。
+
+### Step 7：EXPLAIN 报告
+
+写 `db/explain.sql`，跑 8 个核心查询：
+
+1. 用户登录 `findByEmail`
+2. 用户主页文章列表
+3. 首页最新文章（keyset）
+4. 按 tag 检索
+5. 文章详情（含作者、tag）
+6. 文章评论分页
+7. 用户评论数统计
+8. 后台搜索
+
+每个查询附 EXPLAIN 输出，全部要求 `type ≥ ref`，无 `Using filesort`。
+
+写到 `docs/explain.md`。
+
+### Step 8：README
+
+写 `blog-dao/README.md`：
+
+- 如何起 MySQL（docker-compose 一句）
+- 如何跑测试（`mvn verify`）
+- 如何加新表（Flyway V8__xxx.sql + 新 Mapper + 测试模板）
+- 如何看慢 SQL（开启 P6Spy / 慢日志）
+
+## 交付物
+
+- [ ] `blog/pom.xml`（parent）+ 3 子模块
+- [ ] `blog-dao/src/main/`：5 entity + 5 Mapper + 3 Service + 5 XML
+- [ ] `blog-dao/src/test/`：≥ 40 个测试，覆盖率 ≥ 70%
+- [ ] `db/migration/V*.sql`（27 章已有 + 本章新增）
+- [ ] `docs/explain.md`：8 查询 EXPLAIN 截图
+- [ ] `blog-dao/README.md`
+- [ ] CI 配置（GitHub Actions）跑 `mvn verify`
+
+## 验收清单
+
+| 项 | 标准 |
+|----|------|
+| 模块独立 | `cd blog-dao && mvn verify` 全绿 |
+| 覆盖率 | LINE ≥ 70%（JaCoCo gate 强制） |
+| 8 查询 | EXPLAIN `type` 全部 ≥ ref，无 `ALL`、无 `filesort` |
+| 命名规范 | 实体 PascalCase；Mapper `XxxMapper`；测试 `XxxTest`/`XxxIT` |
+| 无 SQL 注入风险 | grep `${` 应只命中白名单后的列名 |
+| 事务正确 | self call 修复；业务异常正确回滚 |
+| 文档 | README 三段齐全 |
+
+## 扩展挑战
+
+1. **本地 docker-compose 一键起**：`docker-compose up` 起 MySQL + Adminer，开发体验拉满。
+2. **CI 集成测试加速**：Testcontainers reuse + Maven 并行 `-T 4`。
+3. **数据权限 Mapper 拦截器**：根据当前用户角色自动注入 `WHERE user_id=?`。
+4. **慢 SQL 大盘**：把 29 章的 SlowSqlInterceptor 改成 Micrometer Counter，接入 Prometheus + Grafana。
+5. **MyBatis-Plus 替代实验**：选一个模块整改成 MP，对比代码行数 / 性能。

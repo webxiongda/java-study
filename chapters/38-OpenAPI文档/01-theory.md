@@ -1,67 +1,184 @@
-# Chapter 38 OpenAPI文档 - 理论篇
+# Chapter 38 OpenAPI 文档 - 理论篇
 
 ## 一、学习定位
 
-本章主题是 **OpenAPI文档**，核心内容包括：springdoc、接口分组、请求示例、调试。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+写 API 不给文档 = 写代码不用注释。OpenAPI（原 Swagger）是 REST API 文档的事实标准：**注解标注 → 自动生成文档 → 前端可在线调试**。
 
-- 优先级：L2 项目常用
-- 预计投入：3小时
-- 阶段产出：生成 Swagger 接口文档
+- 优先级：L1
+- 预计投入：3 小时
+- 阶段产出：博客 API 全部接口都有 OpenAPI 文档，可在线 curl 调试
 
 ## 二、核心概念
 
-### 1. 资源建模
+### 1. OpenAPI 3 规范
 
-理解 资源建模 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```
+openapi: 3.0.3
+info:
+  title: Blog API
+  version: 1.0.0
+paths:
+  /api/v1/posts:
+    get:
+      summary: 文章列表
+      parameters:
+        - name: lastId
+          in: query
+          schema: { type: integer }
+```
 
-### 2. DTO
+**YAML → 代码**：SpringDoc（`springdoc-openapi-starter-webmvc-ui`）自动从 Controller 注解和 `@Schema` 生成这个 YAML，并内嵌 Swagger UI。
 
-理解 DTO 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+### 2. 与旧版（SpringFox）的区别
 
-### 3. 状态码
+| 维度 | SpringFox（3.x） | SpringDoc（2.x，推荐） |
+|------|-----------------|---------------------|
+| 维护 | 半放弃状态 | 活跃 |
+| Spring Boot 3 支持 | ❌ | ✅ |
+| OpenAPI 版本 | 2.x（Swagger） | 3.x（OpenAPI） |
+| 集成 | 要手配多个 Bean | `springdoc-openapi-starter-webmvc-ui` 自动 |
+| 分组 | `@GroupedOpenApi` | 配置文件 `groups` |
 
-理解 状态码 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+> **结论**：新项目直接用 SpringDoc，不要碰 SpringFox。
 
-### 4. 统一响应
+### 3. 关键注解
 
-理解 统一响应 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```java
+@Operation(summary = "发布文章", description = "发布文章并绑定标签")
+@PostMapping
+@ResponseStatus(HttpStatus.CREATED)
+public Result<PostVO> create(
+    @RequestBody @Valid
+    @io.swagger.v3.oas.annotations.parameters.RequestBody(
+        description = "创建文章请求体", required = true)
+    PostCreateReq req,
 
-### 5. 错误处理
+    @Parameter(description = "当前用户ID")
+    @AuthenticationPrincipal Long userId) { ... }
+```
 
-理解 错误处理 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+| 注解 | 位置 | 作用 |
+|------|------|------|
+| `@Operation` | 方法 | 接口描述 |
+| `@Parameter` | 参数 | 单个参数说明 |
+| `@Schema` | DTO 字段 | 字段描述 / 示例 / 可选 |
+| `@ApiResponse` | 方法 | 响应描述 |
+| `@Tag` | 类 | Controller 分类 |
+
+### 4. DTO 加 Schema 描述
+
+```java
+@Schema(description = "创建文章请求")
+public record PostCreateReq(
+    @NotBlank
+    @Schema(description = "文章标题", example = "Spring Boot 入门", maxLength = 200)
+    String title,
+
+    @Size(max = 500)
+    @Schema(description = "摘要", example = "快速上手 Spring Boot")
+    String summary,
+
+    @NotBlank
+    @Schema(description = "正文", example = "# 正文内容...")
+    String content,
+
+    @Schema(description = "是否直接发布", example = "true")
+    boolean publish,
+
+    @Schema(description = "标签 ID 列表", example = "[1, 2, 3]")
+    List<Long> tagIds
+) {}
+
+@Schema(description = "文章 VO")
+public record PostVO(
+    @Schema(description = "文章 ID", example = "1")
+    Long id,
+
+    @Schema(description = "标题", example = "Spring Boot 入门")
+    String title,
+
+    @Schema(description = "作者昵称", example = "xiong")
+    String userName,
+
+    @Schema(description = "创建时间", example = "2025-01-01T12:00:00")
+    LocalDateTime createdAt
+) {}
+```
+
+### 5. 分组文档（前后端分离）
+
+```yaml
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    groups-order: DESC
+  group-configs:
+    - group: admin
+      paths-to-match: /api/v1/admin/**
+    - group: client
+      paths-to-match: /api/v1/**
+      paths-to-exclude: /api/v1/admin/**
+```
+
+访问：
+
+- `/swagger-ui/index.html` → 混合
+- `/swagger-ui/index.html?group=client` → 只客户端接口
+- `/v3/api-docs` → JSON 原始
+
+### 6. 安全配置
+
+JWT 鉴权时 Swagger 需要知道 Authorization header：
+
+```java
+@Bean
+public OpenAPI customOpenAPI() {
+    return new OpenAPI()
+        .info(new Info().title("Blog API").version("1.0.0")
+            .description("博客后端 API 接口文档"))
+        .addSecurityItem(new SecurityRequirement().addList("bearer"))
+        .components(new Components().addSecuritySchemes("bearer",
+            new SecurityScheme().type(SecurityScheme.Type.HTTP)
+                .scheme("bearer").bearerFormat("JWT")));
+}
+```
+
+Swagger UI 上会多出一个"Authorize"按钮，点它粘 JWT Token，所有请求自动带 `Authorization: Bearer xxx`。
 
 ## 三、工作原理
 
-| 维度 | 要点 | 你需要能说清 |
-|---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 维度 | 要点 |
+|---|---|
+| 入口 | `springdoc-openapi-starter-webmvc-ui` 自动 `@Bean OpenAPIResource` |
+| 配置 | `springdoc.*` 控分组 / 路径 / 缓存 |
+| 执行 | 启动时扫描所有 `@RestController` 方法 + `@Schema` 注解 → 生成 OpenAPI JSON |
+| 边界 | `@Schema` 缺了默认从 Java 类型推断；`example` 需要人工配 |
+| 验证 | 打开 `/swagger-ui/index.html` 逐个接口试 curl |
 
-## 四、项目使用场景
+## 四、在博客项目里的落点
 
-在博客后端项目中，本章能力会服务于以下场景：
+- 所有 Controller 方法加 `@Operation`。
+- 所有 Request/Response DTO 加 `@Schema description + example`。
+- JWT SecurityScheme 配好，Swagger UI 上能测试带 Token 的接口。
+- 分组：client / admin 分组（前后端只看到自己关心的）。
 
-- 完成“生成 Swagger 接口文档”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+## 五、常见坑
 
-## 五、常见问题与坑
-
-| 问题 | 后果 | 处理方式 |
-|---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| 现象 | 原因 | 修法 |
+|------|------|------|
+| Spring Boot 3 启动报 `NoClassDefFoundError` | 用了 SpringFox（不兼容） | 换 SpringDoc |
+| 枚举显示为"string" | 没配 `@Schema(implementation = String.class)` | 显式标类型 |
+| 404 找不到 swagger-ui | 路径有权限拦截（Spring Security）| `.antMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()` |
+| JsonIgnore 字段仍显示 | SpringDoc 尊重 Jackson 注解 | 确认 Jackson 注解正确 |
+| 请求体示例全是空对象 | `@Schema` 缺 `example` | 补 `example` |
 
 ## 六、面试高频问题
 
-1. OpenAPI文档 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“生成 Swagger 接口文档”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+1. OpenAPI 3 和 Swagger 2 的关系？
+2. SpringDoc 和 SpringFox 的区别？
+3. 怎么给 API 分组文档？
+4. OpenAPI 怎么配置 JWT Auth？
+5. 怎么让 Swagger UI 在生产环境不可用？
+6. DTO 的 `@Schema` 缺了 `example` 会怎样？

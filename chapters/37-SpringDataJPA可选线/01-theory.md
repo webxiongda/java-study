@@ -1,67 +1,176 @@
-# Chapter 37 SpringDataJPA可选线 - 理论篇
+# Chapter 37 Spring Data JPA 可选线 - 理论篇
 
 ## 一、学习定位
 
-本章主题是 **SpringDataJPA可选线**，核心内容包括：Entity、Repository、关联映射、MyBatis/JPA 对比。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+这条线是 "MyBatis 的对照实验"——你不一定用它，但需要知道它解决什么问题、和 MyBatis 比差在哪。
 
-- 优先级：L2 项目常用
-- 预计投入：3小时
-- 阶段产出：整理 ORM 对比笔记
+- 优先级：L2（可选线，读完理解即可，不要求在博客项目里替换 MyBatis）
+- 预计投入：2 小时
+- 阶段产出：一篇 MyBatis vs JPA 对比笔记（`docs/jpa-vs-mybatis.md`）
 
 ## 二、核心概念
 
-### 1. Entity
+### 1. JPA 是什么
 
-理解 Entity 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+JPA（Jakarta Persistence API）是 Java 官方的 ORM 标准，Hibernate 是其最流行的实现。Spring Data JPA 在此基础上封装了一层。
 
-### 2. Repository
+```
+Entity → JPA 注解 → Hibernate 生成 SQL → JDBC → DB
+     ↑
+Spring Data JPA：@Repository 接口，方法名自动解析 SQL
+```
 
-理解 Repository 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+### 2. MyBatis vs JPA 核心对比
 
-### 3. 关联关系
+| 维度 | MyBatis（半自动） | JPA/Hibernate（全自动） |
+|------|-----------------|----------------------|
+| SQL 控制 | 手写 SQL，精确控制 | 框架自动生成，有时不符合预期 |
+| 学习曲线 | XML + SQL 基础即可 | Entity 关系映射，一坑一学 |
+| 复杂查询 | 手写 SQL，灵活 | @Query / Specification，边界痛 |
+| N+1 问题 | 自己控制 | 容易触发，@EntityGraph 修复 |
+| 缓存 | 一级 + 可控二级 | 一 + 二 + 查询缓存，但也容易脏 |
+| 性能调优 | 直接改 SQL | 要读 Hibernate 日志看生成了什么 |
+| 国内主流 | 80% 互联网公司 | 少数，如部分 spring-data-jpa 新项目 |
 
-理解 关联关系 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+### 3. Entity 注解
 
-### 4. 持久化上下文
+```java
+@Entity
+@Table(name = "user")
+@Data @NoArgsConstructor @AllArgsConstructor
+public class User {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
 
-理解 持久化上下文 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+    @Column(nullable = false, unique = true, length = 120)
+    private String email;
 
-### 5. ORM 取舍
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<Post> posts;
+}
+```
 
-理解 ORM 取舍 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+| 注解 | 含义 |
+|------|------|
+| `@Entity` | 声明这是 JPA 实体 |
+| `@Id` | 主键 |
+| `@GeneratedValue` | 主键生成策略（IDENTITY/SEQUENCE/AUTO）|
+| `@Column` | 列名、约束、类型 |
+| `@OneToMany` / `@ManyToOne` | 关联关系 |
+| `@Transient` | 不映射到表的字段 |
+
+### 4. Repository 接口
+
+```java
+// 基础 CRUD
+public interface UserRepository extends JpaRepository<User, Long> {
+    // 方法名解析查询
+    Optional<User> findByEmail(String email);
+
+    List<User> findByStatusOrderByCreatedAtDesc(int status);
+
+    // @Query 自定义
+    @Query("SELECT u FROM User u WHERE u.email LIKE CONCAT('%', :kw, '%')")
+    List<User> search(@Param("kw") String kw);
+
+    // 本地 SQL（绕过 JPA 缓存）
+    @Query(value = "SELECT * FROM user WHERE DATE(created_at) = :date",
+           nativeQuery = true)
+    List<User> findByDate(@Param("date") LocalDate date);
+}
+```
+
+**方法名解析**：`findByStatusOrderByCreatedAtDesc` → Hibernate 自动生成 `WHERE status=? ORDER BY created_at DESC`。
+
+**利弊**：简单查询极快；但条件超过 3-4 个时方法名过长，反而不如 `@Query` 清晰。
+
+### 5. 关联关系与 N+1
+
+```java
+@Entity
+public class Post {
+    @ManyToOne(fetch = FetchType.LAZY)   // 默认 EAGER，一定要改 LAZY
+    @JoinColumn(name = "user_id")
+    private User author;
+}
+```
+
+**N+1 演示**：
+
+```java
+// 取 100 条 post → 每条访问 post.author → 100 额外 SQL
+List<Post> posts = postRepository.findAll();
+for (Post p : posts) System.out.println(p.getAuthor().getEmail());
+// SQL: 1 SELECT post + 100 SELECT user
+```
+
+**修复**：
+
+```java
+// 方式 1：@EntityGraph 提前告警
+@EntityGraph(attributePaths = "author")
+@Query("SELECT p FROM Post p")
+List<Post> findAllWithAuthor();
+// 生成 1 条 LEFT JOIN
+
+// 方式 2：@Query 用 JOIN FETCH 显式声明
+@Query("SELECT p FROM Post p JOIN FETCH p.author")
+List<Post> findAllWithAuthor2();
+```
+
+### 6. 事务
+
+Spring Data JPA 的 `JpaRepository` 方法自带 `@Transactional(readOnly=true)`；写操作（`save` / `delete`）自动在事务里执行。手写的 Service 方法加 `@Transactional` 覆盖即可。
+
+### 7. 乐观锁
+
+```java
+@Entity
+public class Post {
+    @Version
+    private Integer version;  // 每次 UPDATE SET version = version + 1 WHERE version = old
+}
+```
+
+并发更新时，版本不匹配抛 `OptimisticLockException`。
 
 ## 三、工作原理
 
-| 维度 | 要点 | 你需要能说清 |
-|---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 维度 | 要点 |
+|---|---|
+| 入口 | `@EnableJpaRepositories("com.example.blog.dao")`（自动）|
+| 配置 | `spring.jpa.hibernate.ddl-auto: update`（开发启用，生产用 Flyway）|
+| 执行 | 方法名解析 → `QueryCreator` → SQL → JDBC |
+| 边界 | N+1、EAGER 拖慢、懒加载在事务外 Exception、ddl-auto 删表 |
+| 验证 | 开 `spring.jpa.show-sql=true + spring.jpa.properties.hibernate.format_sql=true` |
 
-## 四、项目使用场景
+## 四、在博客项目里的定位（对比线）
 
-在博客后端项目中，本章能力会服务于以下场景：
+博客项目走了 MyBatis 路线，但你可以做一个对照实验：把 `Tag` 表用 Spring Data JPA 管理，建立 `TagJpaRepository`，在 Service 里同仓库共存。
 
-- 完成“整理 ORM 对比笔记”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+| 操作 | MyBatis | JPA |
+|-----|---------|-----|
+| 单表 CRUD | BaseMapper | JpaRepository.save/findById/deleteById |
+| 条件查询 | 手写 `<where>` | `findByName(String)` 方法名解析 |
+| 复杂 JOIN | 手写 SQL | `@Query` 或 `Specification` |
+| 分页 | PageHelper / keyset | `Pageable` 参数 |
 
-## 五、常见问题与坑
+## 五、常见坑
 
-| 问题 | 后果 | 处理方式 |
-|---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| 现象 | 原因 | 修法 |
+|------|------|------|
+| LazyInitializationException | 懒加载字段在事务外读取 | `@Transactional` 包围或 `JOIN FETCH` |
+| N+1 全公司投诉 | EAGER 默认或没加 JOIN FETCH | `@EntityGraph` 或改 FetchType.LAZY |
+| DDL 自动删表 | `ddl-auto=create` 覆盖 prod | 生产用 `validate` 或 `none` |
+| 方法名太长解析错 | `findByXAndYOrZ` 超过 4 个条件 | 改用 `@Query` |
+| 乐观锁频繁报错 | 高并发写入同一条记录 | 看实际冲突率，太高则改悲观锁 |
 
 ## 六、面试高频问题
 
-1. SpringDataJPA可选线 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“整理 ORM 对比笔记”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+1. JPA 和 MyBatis 各自的优缺点？（必考）
+2. N+1 怎么产生的？怎么修？（必考）
+3. LAZY 和 EAGER 有什么区别？为什么应该用 LAZY？（必考）
+4. `@Version` 乐观锁怎么工作？
+5. `ddl-auto` 各值的含义？生产上用哪几个？
+6. `@EntityGraph` 的作用？
+7. JPA 的一级缓存和二级缓存区别？

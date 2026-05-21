@@ -1,53 +1,132 @@
-# Chapter 31 Spring基础 - 实操 Demo
+# Chapter 31 Spring 基础 - 实操 Demo
 
 ## Demo 目标
 
-完成一个围绕 **完成 Spring Hello World** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+不引入 Spring Boot，纯 Spring Framework 6 跑最小 IoC + AOP demo，理解：容器启动 → Bean 注册注入 → AOP 切面生效 → 循环依赖报错修复。
 
-## 前置条件
+## 前置
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+- JDK 21、Maven 3.9+
 
-## 实操步骤
+## 一、Maven 依赖
 
-1. 创建本章练习分支或目录，名称包含 chapter-31。
-2. 根据“IoC、DI、Bean、配置方式、生命周期”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：Spring基础 在博客项目中承担什么责任。
+```xml
+<properties><spring.version>6.1.14</spring.version></properties>
+<dependencies>
+    <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-context</artifactId>
+        <version>${spring.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.springframework</groupId>
+        <artifactId>spring-aspects</artifactId>
+        <version>${spring.version}</version>
+    </dependency>
+</dependencies>
+```
 
-## 示例代码
+## 二、最小 IoC
 
-~~~java
-@RestController
-@RequestMapping("/api/articles")
-@RequiredArgsConstructor
-public class ArticleController {
-    private final ArticleService articleService;
+```java
+public interface Greeter { String hello(String name); }
 
-    @GetMapping("/{id}")
-    public ApiResponse<ArticleDetailResponse> detail(@PathVariable Long id) {
-        return ApiResponse.ok(articleService.getDetail(id));
+@Service
+public class GreeterImpl implements Greeter {
+    public String hello(String name) { return "Hi, " + name; }
+}
+
+@Service @RequiredArgsConstructor
+public class App {
+    private final Greeter greeter;
+    public void run() { System.out.println(greeter.hello("xiong")); }
+}
+
+@Configuration
+@ComponentScan("com.example.demo")
+@EnableAspectJAutoProxy
+public class AppConfig {}
+
+public class Main {
+    public static void main(String[] args) {
+        try (var ctx = new AnnotationConfigApplicationContext(AppConfig.class)) {
+            ctx.getBean(App.class).run();
+        }
     }
 }
-~~~
+```
 
-## 运行与验证
+输出：`Hi, xiong`
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+## 三、AOP 切面：方法计时
 
-## 建议提交信息
+```java
+@Aspect @Component @Slf4j
+public class TimingAspect {
+    @Around("execution(* com.example.demo..*.run(..))")
+    public Object timing(ProceedingJoinPoint pjp) throws Throwable {
+        long t = System.currentTimeMillis();
+        try { return pjp.proceed(); }
+        finally { log.info("{} cost={}ms", pjp.getSignature(), System.currentTimeMillis()-t); }
+    }
+}
+```
 
-~~~bash
-git add .
-git commit -m "chapter 31: Spring基础 demo"
-~~~
+重跑输出多一行：`INFO TimingAspect - void App.run() cost=3ms`
+
+## 四、@Bean 注册三方对象
+
+```java
+@Configuration
+@PropertySource("classpath:application.properties")
+public class DbConfig {
+    @Bean
+    public HikariDataSource dataSource(@Value("${db.url}") String url) {
+        HikariDataSource ds = new HikariDataSource();
+        ds.setJdbcUrl(url);
+        return ds;
+    }
+}
+```
+
+## 五、循环依赖报错
+
+```java
+@Service @RequiredArgsConstructor public class A { private final B b; }
+@Service @RequiredArgsConstructor public class B { private final A a; }
+// BeanCurrentlyInCreationException：构造器循环依赖无法解开
+```
+
+修法 1：`@Lazy`（最快）
+
+```java
+public A(@Lazy B b) { this.b = b; }
+```
+
+修法 2：改 setter 注入（让 Spring 三级缓存解开）
+
+修法 3：重构 → 抽共同逻辑到 C，A/B 各依赖 C（治本）
+
+## 六、自动装配冲突
+
+```java
+public interface PayService {}
+@Service public class AliPay implements PayService {}
+@Service public class WeChatPay implements PayService {}
+// NoUniqueBeanDefinitionException
+```
+
+修法：`@Primary` 标默认；或 `@Qualifier("aliPay")` 精确指定。
+
+## 七、看容器里的 Bean
+
+```java
+Arrays.stream(ctx.getBeanDefinitionNames()).forEach(System.out::println);
+```
+
+## 提交建议
+
+```bash
+git add demo/spring-basics/
+git commit -m "chapter 31: pure spring IoC + AOP demo"
+```

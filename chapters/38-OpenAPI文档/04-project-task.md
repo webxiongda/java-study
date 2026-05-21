@@ -1,40 +1,109 @@
-# Chapter 38 OpenAPI文档 - 项目任务
+# Chapter 38 OpenAPI 文档 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**生成 Swagger 接口文档**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+给博客所有 API 加上 OpenAPI 3 文档：所有 Controller 标注 `@Operation`、所有 DTO 配 `@Schema`、Swagger UI 可在线测试、生产环境关闭文档。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **OpenAPI文档** 能力，不能只停留在知识点阅读。
+后端写"不文档化"的 API 只配自己用——没有文档就没有前端对接、没有测试、没有市场。这一章把博客全套 API 文档化。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 springdoc、接口分组、请求示例、调试 的关键点。
-2. 实现或设计“生成 Swagger 接口文档”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 SpringDoc
+
+```xml
+<dependency>
+    <groupId>org.springdoc</groupId>
+    <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+    <version>2.6.0</version>
+</dependency>
+```
+
+### Step 2：写 OpenAPI Bean
+
+```java
+@Bean
+public OpenAPI blogOpenAPI() {
+    return new OpenAPI()
+        .info(new Info().title("Blog API").version("1.0.0")
+            .description("博客 v1 后端接口"))
+        .addSecurityItem(new SecurityRequirement().addList("bearer"))
+        .components(new Components().addSecuritySchemes("bearer",
+            new SecurityScheme().type(SecurityScheme.Type.HTTP)
+                .scheme("bearer").bearerFormat("JWT")));
+}
+```
+
+### Step 3：给所有 Controller 加 @Operation
+
+遍历 `controller/` 下所有类，每个方法加 `@Operation(summary = "...", description = "...")`。
+
+### Step 4：给所有 DTO 加 @Schema
+
+所有 Request / Response DTO：
+
+- `@Schema(description = "...")` 在类
+- `@Schema(description = "...", example = "...")` 在字段
+
+example 必须填真实的示例值（如 email: `"user@example.com"`，id: `1`），不能空着。
+
+### Step 5：Swagger 分组
+
+client / admin 分组：
+
+```yaml
+springdoc:
+  group-configs:
+    - group: client
+      paths-to-match: /api/v1/**
+      paths-to-exclude: /api/v1/admin/**
+    - group: admin
+      paths-to-match: /api/v1/admin/**
+```
+
+验证：`/swagger-ui/index.html?group=client` 能选分组。
+
+### Step 6：生产关闭 Swagger
+
+```yaml
+# application-prod.yml
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+```
+
+验证：`spring.profiles.active=prod` 启动后 `/swagger-ui/index.html` 返回 404。
+
+### Step 7：验证可以 curl
+
+打开 Swagger UI → 点开一个接口 → "Try it out" → 发送 → 确认返回正确的 JSON。
 
 ## 交付物
 
-- [ ] 完成“生成 Swagger 接口文档”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `OpenAPIConfig.java`（`@Configuration` + `OpenAPI` Bean）
+- [ ] 所有 Controller 方法加 `@Operation`
+- [ ] 所有 DTO 加 `@Schema(description + example)`
+- [ ] `application.yml` 加 `springdoc` 分组配置
+- [ ] `application-prod.yml` 关闭文档
+- [ ] `docs/api-doc-screenshot.png`：Swagger UI 页面截图
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| Swagger UI 可访问 | `/swagger-ui/index.html` 显示完整 API 列表 |
+| 每个接口有 description | 方法上 `@Operation(summary=xxx)` |
+| 每个字段有 example | DTO 里每个字段 `@Schema(example=xxx)` |
+| JWT Bearer 可配 | Swagger UI "Authorize" 按钮存在，粘 Token 后可调接口 |
+| 分组有效 | client 分组不显示 admin 接口 |
+| 生产 404 | prod profile 下 Swagger 不可访问 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **导出 OpenAPI JSON**：启动后 curl `/v3/api-docs` → 保存为 `docs/openapi.json`，用 Swagger Editor 在线编辑。
+2. **Codegen 生成前端 SDK**：`npx @openapitools/openapi-generator-cli generate -i docs/openapi.json -g typescript-axios -o ../frontend/src/api`，验证前端可调用。
+3. **自定主题**：Swagger UI 换成 Scalar UI `/swagger-ui` → 加 `springdoc.swagger-ui.path: /swagger-ui` 保留兼容。
+4. **接口变更对比**：Git CI 对比两次 commit 的 `openapi.json` diff，接口变更自动通知到钉钉群。

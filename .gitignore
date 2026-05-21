@@ -5,6 +5,8 @@
 target/
 build/
 out/
+dist/
+node_modules/
 
 # IDE/editor files
 .idea/
@@ -15,3 +17,11 @@ out/
 *.log
 .env
 .env.*
+
+# H2 database
+*.mv.db
+*.trace.db
+
+# Project specific
+data/
+backend/target/

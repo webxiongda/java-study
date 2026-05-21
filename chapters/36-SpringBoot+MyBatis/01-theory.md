@@ -1,67 +1,190 @@
-# Chapter 36 SpringBoot+MyBatis - 理论篇
+# Chapter 36 Spring Boot + MyBatis - 理论篇
 
 ## 一、学习定位
 
-本章主题是 **SpringBoot+MyBatis**，核心内容包括：数据源、Mapper 扫描、分页、事务整合。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+28-29 章把 MyBatis 跑通了（纯 Spring），这一章专讲 **Boot + MyBatis 整合的所有配置细节**：Starter 帮你做了什么、怎么配多数据源、分页插件、代码生成、Mapper 扫描路径。
 
-- 优先级：L1 必须掌握
-- 预计投入：4小时
-- 阶段产出：完成博客后端 CRUD
+- 优先级：L1
+- 预计投入：3 小时
+- 阶段产出：博客项目的 `blog-api` 模块跑通 Boot + MyBatis，含分页、多数据源、单测
 
 ## 二、核心概念
 
-### 1. 自动配置
+### 1. `mybatis-spring-boot-starter` 帮你做了什么
 
-理解 自动配置 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```xml
+<dependency>
+    <groupId>org.mybatis.spring.boot</groupId>
+    <artifactId>mybatis-spring-boot-starter</artifactId>
+    <version>3.0.3</version>
+</dependency>
+```
 
-### 2. Starter
+自动配置链：
 
-理解 Starter 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+| 自动配置类 | 做了什么 |
+|----------|---------|
+| `MybatisAutoConfiguration` | 读 `mybatis.*` 属性，创建 `SqlSessionFactory` |
+| `MybatisLanguageDriverAutoConfiguration` | 注册 `LanguageDriver`（Freemarker / Velocity 模板 SQL）|
+| `SqlSessionTemplate` | 线程安全的 SqlSession 代理 Bean |
+| `@MapperScan`（自动）| 扫描 `@Mapper` 注解的接口，注册代理 |
 
-### 3. 分层架构
+你只需在 `application.yml` 里写：
 
-理解 分层架构 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```yaml
+mybatis:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+    default-fetch-size: 100
+    default-statement-timeout: 30
+  type-aliases-package: com.example.blog.entity
+```
 
-### 4. 配置管理
+### 2. Mapper 扫描的 3 种方式
 
-理解 配置管理 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+| 方式 | 例 | 优先级 |
+|-----|-----|-------|
+| `@Mapper` 接口注解 | `@Mapper public interface UserMapper {}` | 中 |
+| 主类 `@MapperScan` | `@MapperScan("com.example.blog.dao")` | 高 |
+| `mybatis.mapper-locations` + 自动扫描 | yml 配置 | 与 `@MapperScan` 配合 |
 
-### 5. 运行入口
+**推荐**：主类或配置类加 `@MapperScan("com.example.blog.dao")`，接口不需要每个加 `@Mapper`。
 
-理解 运行入口 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+### 3. 分页插件 PageHelper
+
+```xml
+<dependency>
+    <groupId>com.github.pagehelper</groupId>
+    <artifactId>pagehelper-spring-boot-starter</artifactId>
+    <version>2.1.0</version>
+</dependency>
+```
+
+```yaml
+pagehelper:
+  helper-dialect: mysql
+  reasonable: true
+  support-methods-arguments: true
+```
+
+使用：
+
+```java
+PageHelper.startPage(page, size);   // 拦截下一条 SELECT，自动加 LIMIT + COUNT(*)
+List<Post> list = postMapper.findByStatus(1);
+PageInfo<Post> info = new PageInfo<>(list);
+// info.getTotal(), info.getList(), info.isHasNextPage()
+```
+
+**原理**：`PageInterceptor` 拦截 `StatementHandler.prepare()`，在 SQL 前执行 `SELECT COUNT(*)`，在 SQL 后加 `LIMIT ?, ?`。
+
+**缺点**：COUNT 加在所有 SELECT 上（包括子查询），复杂 SQL 性能差；大 OFFSET 仍然慢。**生产推荐 keyset 分页**。
+
+### 4. 多数据源
+
+场景：读写分离（写 → master，读 → slave）。
+
+```java
+@Configuration
+public class DataSourceConfig {
+    @Primary
+    @Bean("masterDs")
+    @ConfigurationProperties("spring.datasource.master")
+    public DataSource masterDataSource() { return DataSourceBuilder.create().build(); }
+
+    @Bean("slaveDs")
+    @ConfigurationProperties("spring.datasource.slave")
+    public DataSource slaveDataSource() { return DataSourceBuilder.create().build(); }
+
+    @Bean
+    public DynamicDataSource dynamicDs(
+        @Qualifier("masterDs") DataSource master,
+        @Qualifier("slaveDs") DataSource slave) {
+        Map<Object, Object> m = new HashMap<>();
+        m.put("MASTER", master);
+        m.put("SLAVE", slave);
+        return new DynamicDataSource(master, m);   // 基于 AbstractRoutingDataSource
+    }
+}
+```
+
+路由切换：
+
+```java
+@Around("execution(* com.example..dao.*Mapper.find*(..))")
+public Object slave(ProceedingJoinPoint pjp) throws Throwable {
+    DataSourceContextHolder.setSlave();
+    try { return pjp.proceed(); }
+    finally { DataSourceContextHolder.clear(); }
+}
+```
+
+**生产更简单**：用 ShardingSphere JDBC 的 `ReadwriteSplittingDataSourceFactory`，不用手写路由。
+
+### 5. MyBatis-Plus 常用特性
+
+| 特性 | 用法 |
+|------|------|
+| BaseMapper CRUD | `extends BaseMapper<Post>` |
+| LambdaQueryWrapper | `.eq(Post::getStatus, 1).orderByDesc(Post::getId)` |
+| 逻辑删除 | `@TableLogic int isDeleted` |
+| 乐观锁 | `@Version int version` |
+| 自动填充 | `@TableField(fill = FieldFill.INSERT) LocalDateTime createdAt` |
+| 防全表更新 | `BlockAttackInnerInterceptor` 注册 |
+| 分页 | `IPage<Post> page = mapper.selectPage(new Page<>(1, 10), wrapper)` |
+
+### 6. Mapper 单测策略
+
+```java
+// 方式 1：@MybatisTest（只启动 MyBatis 相关 Bean，不加载 Web 层）
+@MybatisTest
+@AutoConfigureTestDatabase(replace = NONE)   // 用真实 DB，不用 H2
+@Testcontainers
+class PostMapperTest {
+    @Container static MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.0.36");
+    @DynamicPropertySource static void props(...) {...}
+
+    @Autowired PostMapper postMapper;
+
+    @Test @Transactional
+    void find_by_status_returns_published() { ... }
+}
+```
 
 ## 三、工作原理
 
-| 维度 | 要点 | 你需要能说清 |
-|---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 维度 | 要点 |
+|---|---|
+| 入口 | `MybatisAutoConfiguration` → `@ConditionalOnSingleCandidate(DataSource.class)` |
+| 配置 | `mybatis.configuration.*` 直接映射到 `org.apache.ibatis.session.Configuration` |
+| 执行 | `SqlSessionTemplate` 每次从 `SqlSessionFactory` 取 Session；Spring 事务自动绑定 |
+| 边界 | 多数据源时 `@Primary` 必须设；事务管理器和数据源必须配套 |
+| 验证 | 开 `log-impl: Slf4jImpl`，看带参 SQL |
 
-## 四、项目使用场景
+## 四、在博客项目里的落点
 
-在博客后端项目中，本章能力会服务于以下场景：
+- `@MapperScan("com.example.blog.dao")` 放主类或 `DaoConfig`。
+- 全部 Mapper XML 在 `src/main/resources/mapper/`。
+- 读写分离：写操作走 master，列表 / 搜索走 slave（可选，51 章并发后再加）。
+- 单测：`@MybatisTest + Testcontainers`，无需全量 `@SpringBootTest`，快 3 倍。
 
-- 完成“完成博客后端 CRUD”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+## 五、常见坑
 
-## 五、常见问题与坑
-
-| 问题 | 后果 | 处理方式 |
-|---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| 现象 | 原因 | 修法 |
+|------|------|------|
+| Mapper Bean 找不到 | 包路径 `@MapperScan` 写错 | 确认主类子包 |
+| XML 报 `Invalid bound statement` | namespace 或 id 拼错 | 检查 namespace = 接口全限定名 |
+| 多数据源事务混乱 | 两个 DS 共用一个 `PlatformTransactionManager` | 每个 DS 配一个独立 TM |
+| PageHelper count 慢 | 复杂 SQL 被 count 包一层 | `PageHelper.startPage(1,10,false)` 跳过 count |
+| 驼峰不映射 | 没开 `map-underscore-to-camel-case` | 加到 yml |
 
 ## 六、面试高频问题
 
-1. SpringBoot+MyBatis 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“完成博客后端 CRUD”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+1. `mybatis-spring-boot-starter` 自动创建了哪些 Bean？
+2. `@Mapper` 和 `@MapperScan` 的区别？
+3. MyBatis 和 MyBatis-Plus 可以在同一项目共存吗？
+4. 多数据源怎么路由到正确的 DS？事务管理器怎么配？
+5. PageHelper 的分页原理？为什么大 OFFSET 仍然慢？
+6. `@MybatisTest` 和 `@SpringBootTest` 哪个更快？

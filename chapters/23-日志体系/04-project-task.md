@@ -2,39 +2,74 @@
 
 ## 任务概述
 
-本章项目任务是：**给项目接入标准日志配置**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
-
-## 业务背景
-
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **日志体系** 能力，不能只停留在知识点阅读。
+给 `blog-api` 接入**结构化日志 + traceId + 分级文件归档**，为后续所有章节的可观测性奠基。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 SLF4J、Logback、日志级别、日志格式 的关键点。
-2. 实现或设计“给项目接入标准日志配置”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：添加 `logback-spring.xml`
+
+放到 `src/main/resources/logback-spring.xml`，要点：
+- 控制台 + 文件双 appender
+- 文件按日期 + 大小滚动，保留 30 天
+- ERROR 单独写一份 `error.log`
+- pattern 含 `%X{traceId:-}`
+- 用 `<springProfile name="prod">` / `dev` 区分级别
+
+### Step 2：写 `TraceIdFilter`
+
+参考 `03-check.md` Q4。注册成 `@Component` + `@Order(1)`，header 名 `X-Trace-Id`。
+
+### Step 3：写一个示例 Service 演示日志输出
+
+```java
+@Slf4j
+@RestController
+public class PingController {
+    @GetMapping("/ping")
+    public Map<String, String> ping() {
+        log.info("ping called");
+        log.debug("debug detail: {}", System.currentTimeMillis());
+        return Map.of("pong", "ok");
+    }
+}
+```
+
+### Step 4：本地验证
+
+```bash
+mvn spring-boot:run
+curl -i http://localhost:8080/ping            # 响应头有 X-Trace-Id
+tail -f logs/app.log                          # 看到带 traceId 的行
+curl -H "X-Trace-Id: my-custom-id" http://localhost:8080/ping
+# 日志里 traceId=my-custom-id（沿用上游）
+```
+
+### Step 5：故意触发一次 ERROR
+
+加一个 `/boom` 接口 `throw new RuntimeException("oops")`。访问后：
+- `logs/error.log` 出现 stack trace
+- `logs/app.log` 同时有该行（root 配置）
 
 ## 交付物
 
-- [ ] 完成“给项目接入标准日志配置”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `logback-spring.xml`（含 console、file、error_file 三个 appender）
+- [ ] `TraceIdFilter.java`
+- [ ] `PingController.java` + `/boom` 示例
+- [ ] 截图：`logs/app.log` 和 `logs/error.log` 各一段
+- [ ] 在 `docs/observability.md` 记录：traceId 流转路径、日志保留策略、生产改 DEBUG 的方法
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| 输出格式 | 每行含 `level / traceId / logger / msg` |
+| 同请求关联 | 一次请求所有日志 traceId 相同 |
+| 文件滚动 | 跑压测产生 > 100MB 后自动滚动 + gzip 历史 |
+| ERROR 分流 | 只有 ERROR 进 `error.log` |
+| 异步透传 | `@Async` 方法里 traceId 依然存在（用 `TaskDecorator`） |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **接 Loki / ELK**：用 logback-encoder 把日志编码成 JSON，方便机器抓取。
+2. **动态调级**：开 `spring-boot-starter-actuator`，`POST /actuator/loggers/com.example` 临时改 DEBUG，排查完调回 INFO。
+3. **敏感字段脱敏**：写一个 `MaskingPatternLayout`，自动把 `password=xxx`、`token=...` 替换为 `***`。

@@ -1,40 +1,124 @@
-# Chapter 28 MyBatis入门 - 项目任务
+# Chapter 28 MyBatis 入门 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**用 MyBatis 实现博客 CRUD**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+把博客 DAO 层从 Chapter 24 的手写 JDBC 全部迁到 MyBatis，配单测覆盖 ≥ 70%。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **MyBatis入门** 能力，不能只停留在知识点阅读。
+24 章的 `UserDao` 已经 200 多行，每个方法都是「拿连接 → ps.setXxx → while rs.next」。这一章用 MyBatis 砍掉样板，并把 27 章新设计的 6 张表的 DAO 全部建起来。
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Mapper、XML/注解、动态 SQL、结果映射 的关键点。
-2. 实现或设计“用 MyBatis 实现博客 CRUD”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：加依赖
+
+```xml
+<dependency>
+    <groupId>org.mybatis.spring.boot</groupId>
+    <artifactId>mybatis-spring-boot-starter</artifactId>
+    <version>3.0.3</version>
+</dependency>
+<dependency>
+    <groupId>com.mysql</groupId>
+    <artifactId>mysql-connector-j</artifactId>
+</dependency>
+```
+
+`application.yml`：
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/blog?useSSL=false&serverTimezone=UTC&rewriteBatchedStatements=true
+    username: root
+    password: ${DB_PASSWORD}
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+```
+
+### Step 2：建实体 + Mapper 接口
+
+`entity/`：`User`、`Post`、`Comment`、`Tag`、`PostTag`。
+
+`dao/`：每张表 1 个 Mapper 接口，至少 6 个方法：
+
+- `findById` / `findByXxx`（带索引能命中的查询）
+- `insert`（开 `useGeneratedKeys`）
+- `update`（按主键）
+- `softDelete`（UPDATE is_deleted=1）
+- `pageByXxx`（keyset 分页）
+- `batchInsert`（foreach）
+
+### Step 3：XML 映射
+
+`resources/mapper/UserMapper.xml` 等 5 个文件，要求：
+
+- 全部用 `#{}`，禁用 `${}`（除非白名单后的排序列）
+- 多参数用 `@Param`
+- 列名靠驼峰自动映射，不写多余 resultMap
+
+### Step 4：单测
+
+`src/test/java/.../UserMapperTest.java`：
+
+```java
+@SpringBootTest
+@Transactional   // 自动回滚
+class UserMapperTest {
+
+    @Autowired UserMapper userMapper;
+
+    @Test void findById_returns_user() {
+        Long id = userMapper.insert(User.builder().email("t@x.com").nickname("t").build());
+        assertThat(userMapper.findById(id).getEmail()).isEqualTo("t@x.com");
+    }
+}
+```
+
+每个 Mapper 至少 5 个测试用例。
+
+### Step 5：失败场景
+
+故意写一个 `${kw}` 的 Mapper 方法 → 写 SQL 注入测试用例证明可以拖库 → 改成 `#{kw}` → 测试通过。
+
+### Step 6：开 SQL 日志看真实带参
+
+在 yml 里临时换 P6Spy：
+
+```yaml
+spring:
+  datasource:
+    driver-class-name: com.p6spy.engine.spy.P6SpyDriver
+    url: jdbc:p6spy:mysql://localhost:3306/blog
+```
+
+跑一遍 `UserMapperTest`，截图 `logs/spy.log` 里带参 SQL 贴到 `docs/sql-log.md`。
 
 ## 交付物
 
-- [ ] 完成“用 MyBatis 实现博客 CRUD”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `src/main/java/com/example/dao/*.java`：5 个 Mapper 接口
+- [ ] `src/main/resources/mapper/*.xml`：5 个映射
+- [ ] `src/test/java/com/example/dao/*Test.java`：≥ 25 个测试
+- [ ] `docs/sql-log.md`：P6Spy 截图
+- [ ] `docs/sql-injection-demo.md`：注入复现 + 修复
 
 ## 验收清单
 
-| 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+| 项 | 标准 |
+|----|------|
+| Mapper 全部走 `#{}` | grep `'${'` 在 mapper 下应只命中白名单后的列名 |
+| 测试通过 | `mvn test` 全绿，覆盖率 ≥ 70% |
+| 无 N+1 | 取「文章 + 作者名」用反范式 user_name，不要循环查 user |
+| 命名一致 | 接口名 = `XxxMapper`；namespace = 接口全限定名 |
+| 事务正确 | 测试用 `@Transactional` 自动回滚，不污染数据 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **MyBatis-Plus 对比**：选 1 张表用 MyBatis-Plus 的 BaseMapper，写一段博客对比"自动 CRUD 节省了多少代码 / 牺牲了什么"。
+2. **PageHelper 接入**：分页接口从手算 offset 改成 `PageHelper.startPage(page, size)` 风格，对比可读性。
+3. **TypeHandler**：写一个 `JsonTypeHandler<List<String>>`，让 Java List 自动序列化成 JSON 列。
+4. **Mapper 接口生成器**：用 MyBatis Generator (MBG) 反向从 DB 生成 Mapper，对比手写 Mapper 的取舍。
