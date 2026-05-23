@@ -30,6 +30,11 @@ public class LearningController {
         return learningService.summary(currentUser(authentication));
     }
 
+    @GetMapping("/today")
+    public LearningDtos.TodayDto today(Authentication authentication) {
+        return learningService.today(currentUser(authentication));
+    }
+
     @GetMapping("/chapters")
     public List<LearningDtos.ChapterMeta> chapters(Authentication authentication) {
         return learningService.chapters(currentUser(authentication));
@@ -46,9 +51,25 @@ public class LearningController {
         return Map.of("ok", true);
     }
 
+    @PostMapping("/validations")
+    public Map<String, Boolean> validations(Authentication authentication, @RequestBody LearningDtos.ValidationRequest request) {
+        learningService.submitValidation(currentUser(authentication), request);
+        return Map.of("ok", true);
+    }
+
     @GetMapping("/reviews")
     public List<LearningDtos.ReviewTaskDto> reviews(Authentication authentication) {
         return learningService.reviews(currentUser(authentication));
+    }
+
+    @GetMapping("/cards/due")
+    public List<LearningDtos.ReviewCardDto> dueCards(Authentication authentication) {
+        return learningService.dueCards(currentUser(authentication));
+    }
+
+    @PostMapping("/cards/{cardId}/answer")
+    public List<LearningDtos.ReviewCardDto> answerCard(Authentication authentication, @PathVariable long cardId, @RequestBody LearningDtos.CardAnswerRequest request) {
+        return learningService.answerCard(currentUser(authentication), cardId, request);
     }
 
     @PatchMapping("/reviews")
@@ -87,6 +108,16 @@ public class LearningController {
     public Map<String, Boolean> checkReveal(Authentication authentication, @RequestBody LearningDtos.CheckRevealRequest request) {
         learningService.revealAnswer(currentUser(authentication), request);
         return Map.of("ok", true);
+    }
+
+    @GetMapping("/portfolio")
+    public LearningDtos.PortfolioDto portfolio(Authentication authentication) {
+        return learningService.portfolio(currentUser(authentication));
+    }
+
+    @PostMapping("/portfolio/evidence")
+    public LearningDtos.PortfolioDto portfolioEvidence(Authentication authentication, @RequestBody LearningDtos.PortfolioEvidenceRequest request) {
+        return learningService.savePortfolioEvidence(currentUser(authentication), request);
     }
 
     private User currentUser(Authentication authentication) {

@@ -2,47 +2,213 @@
 
 ## Demo 目标
 
-完成一个围绕 **完成并发计数器实验** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+亲手对比并感受 6 种并发安全工具:
+1. `i++` 直接共享 (错误示范)
+2. `synchronized`
+3. `AtomicInteger`
+4. `LongAdder` (高竞争)
+5. `ReentrantLock` 公平 vs 非公平
+6. `ConcurrentHashMap` 替换 `HashMap`
 
-## 前置条件
+## 一、计数器对比 (5 种实现)
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+```java
+public class CounterBench {
+    static final int THREADS = 16;
+    static final int LOOP = 1_000_000;
 
-## 实操步骤
+    interface Counter { void inc(); long get(); }
 
-1. 创建本章练习分支或目录，名称包含 chapter-53。
-2. 根据“synchronized、Lock、Atomic、volatile、可见性”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：并发安全 在博客项目中承担什么责任。
+    public static void main(String[] args) throws Exception {
+        run("Unsafe (i++)", new Counter() {
+            long c = 0;
+            public void inc() { c++; }
+            public long get() { return c; }
+        });
 
-## 示例代码
+        run("synchronized", new Counter() {
+            long c = 0;
+            public synchronized void inc() { c++; }
+            public synchronized long get() { return c; }
+        });
 
-~~~java
-ExecutorService pool = Executors.newFixedThreadPool(4);
-List<CompletableFuture<String>> tasks = urls.stream()
-    .map(url -> CompletableFuture.supplyAsync(() -> download(url), pool))
-    .toList();
-CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])).join();
-pool.shutdown();
-~~~
+        run("AtomicLong", new Counter() {
+            AtomicLong c = new AtomicLong();
+            public void inc() { c.incrementAndGet(); }
+            public long get() { return c.get(); }
+        });
 
-## 运行与验证
+        run("LongAdder", new Counter() {
+            LongAdder c = new LongAdder();
+            public void inc() { c.increment(); }
+            public long get() { return c.sum(); }
+        });
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+        run("ReentrantLock", new Counter() {
+            ReentrantLock lock = new ReentrantLock();
+            long c = 0;
+            public void inc() { lock.lock(); try { c++; } finally { lock.unlock(); } }
+            public long get() { return c; }
+        });
+    }
 
-## 建议提交信息
+    static void run(String name, Counter c) throws Exception {
+        ExecutorService es = Executors.newFixedThreadPool(THREADS);
+        CountDownLatch start = new CountDownLatch(1);
+        CountDownLatch done = new CountDownLatch(THREADS);
+        for (int i = 0; i < THREADS; i++) {
+            es.submit(() -> {
+                try { start.await(); } catch (InterruptedException ignored) {}
+                for (int j = 0; j < LOOP; j++) c.inc();
+                done.countDown();
+            });
+        }
+        long t0 = System.currentTimeMillis();
+        start.countDown();
+        done.await();
+        long cost = System.currentTimeMillis() - t0;
+        es.shutdown();
+        System.out.printf("%-15s expected=%d got=%d cost=%dms%n",
+            name, (long) THREADS * LOOP, c.get(), cost);
+    }
+}
+```
 
-~~~bash
-git add .
-git commit -m "chapter 53: 并发安全 demo"
-~~~
+**典型输出 (16 核, M2)**:
+```
+Unsafe (i++)    expected=16000000 got=4521033   cost=82ms     ← 丢数据
+synchronized    expected=16000000 got=16000000  cost=520ms
+AtomicLong      expected=16000000 got=16000000  cost=340ms
+LongAdder       expected=16000000 got=16000000  cost=110ms    ← 高竞争最快
+ReentrantLock   expected=16000000 got=16000000  cost=480ms
+```
+
+**结论**:
+- `i++` 丢约 70% → 证明非原子
+- `LongAdder` 在高竞争场景秒杀 `AtomicLong` (分段累加, 最后 sum)
+
+## 二、死锁演示 + jstack
+
+```java
+public class DeadlockDemo {
+    static final Object A = new Object();
+    static final Object B = new Object();
+
+    public static void main(String[] args) {
+        new Thread(() -> {
+            synchronized (A) { sleep(100); synchronized (B) { System.out.println("t1 ok"); } }
+        }, "t1").start();
+        new Thread(() -> {
+            synchronized (B) { sleep(100); synchronized (A) { System.out.println("t2 ok"); } }
+        }, "t2").start();
+    }
+    static void sleep(long ms) { try { Thread.sleep(ms); } catch (InterruptedException e) {} }
+}
+```
+
+```bash
+jps                                  # 找 pid
+jstack <pid> | grep -A 20 "Found one Java-level deadlock"
+```
+
+预期输出末尾:
+```
+Found one Java-level deadlock:
+=============================
+"t1": waiting to lock monitor 0x... (object 0x... [B]),
+  which is held by "t2"
+"t2": waiting to lock monitor 0x... (object 0x... [A]),
+  which is held by "t1"
+```
+
+## 三、ThreadLocal 串号坑
+
+```java
+public class TLPollutionDemo {
+    static final ThreadLocal<String> USER = new ThreadLocal<>();
+
+    public static void main(String[] args) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(2);  // 只 2 个线程
+        for (int i = 0; i < 5; i++) {
+            int user = i;
+            pool.submit(() -> {
+                System.out.println(Thread.currentThread().getName()
+                    + " before: " + USER.get());     // 看到上一次用户的数据!
+                USER.set("user-" + user);
+                // 漏写 USER.remove();
+            });
+        }
+        pool.shutdown();
+        pool.awaitTermination(5, TimeUnit.SECONDS);
+    }
+}
+```
+
+**输出示例**:
+```
+pool-1-thread-1 before: null
+pool-1-thread-2 before: null
+pool-1-thread-1 before: user-0     ← 串号! 应是 null
+pool-1-thread-2 before: user-1
+pool-1-thread-1 before: user-2
+```
+
+加上 `try { ... } finally { USER.remove(); }` 修复。
+
+## 四、CAS + ABA + AtomicStampedReference
+
+```java
+public class AbaDemo {
+    public static void main(String[] args) throws Exception {
+        AtomicInteger ref = new AtomicInteger(1);
+
+        new Thread(() -> {
+            ref.compareAndSet(1, 2);
+            ref.compareAndSet(2, 1);   // 改回去
+        }).start();
+
+        Thread.sleep(100);
+        boolean ok = ref.compareAndSet(1, 3);
+        System.out.println("普通 CAS 成功? " + ok);   // true, 没感知 ABA
+
+        AtomicStampedReference<Integer> stamped = new AtomicStampedReference<>(1, 0);
+        new Thread(() -> {
+            stamped.compareAndSet(1, 2, 0, 1);
+            stamped.compareAndSet(2, 1, 1, 2);
+        }).start();
+        Thread.sleep(100);
+        boolean ok2 = stamped.compareAndSet(1, 3, 0, 1);   // 期望版本 0, 实际 2
+        System.out.println("带版本 CAS 成功? " + ok2);    // false
+    }
+}
+```
+
+## 五、ConcurrentHashMap 的 computeIfAbsent
+
+```java
+ConcurrentHashMap<String, AtomicLong> stats = new ConcurrentHashMap<>();
+
+// 错误: 非原子, 高并发下创建多个 AtomicLong
+stats.putIfAbsent("pv", new AtomicLong());   // 每次 new 都对象浪费
+stats.get("pv").incrementAndGet();
+
+// 正确: computeIfAbsent 原子保证
+stats.computeIfAbsent("pv", k -> new AtomicLong()).incrementAndGet();
+```
+
+## 六、运行 & 验证
+
+```bash
+javac CounterBench.java && java CounterBench       # 看 5 种实现耗时与正确性
+javac DeadlockDemo.java && java DeadlockDemo &     # 起死锁
+jstack $!                                          # 看到 Found one deadlock
+javac TLPollutionDemo.java && java TLPollutionDemo
+javac AbaDemo.java && java AbaDemo
+```
+
+## 七、提交
+
+```bash
+git add backend/src/test/java/concurrency/
+git commit -m "ch53: thread-safety demos (counter bench / deadlock / tl-pollution / aba)"
+```

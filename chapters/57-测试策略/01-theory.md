@@ -2,66 +2,323 @@
 
 ## 一、学习定位
 
-本章主题是 **测试策略**，核心内容包括：单元测试、集成测试、MockMvc、测试数据。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+测试不是"写完代码加几个 assert", 而是 **让代码可改、可重构、可上线** 的基础设施。 没测试的项目, 后期人人不敢动。
 
-- 优先级：L2 项目常用
-- 预计投入：4小时
-- 阶段产出：补齐核心接口测试
+- 优先级: L1 (中大型项目必备)
+- 投入: 5 小时
+- 产出: 博客 API 单测覆盖率 ≥ 60%, 关键路径有集成测试
 
 ## 二、核心概念
 
 ### 1. 测试金字塔
 
-理解 测试金字塔 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```
+        /\
+       /E2E\           少 (慢 / 脆 / 高价值)
+      /------\
+     /集成测试\         中 (Service + DB)
+    /----------\
+   / 单元测试    \      多 (纯逻辑, 毫秒级)
+  /--------------\
+```
 
-### 2. 可重复执行
+| 层 | 范围 | 工具 | 数量比 | 单条耗时 |
+|---|---|---|---|---|
+| 单元 | 单个类/方法, mock 依赖 | JUnit5 + Mockito | 70% | < 100ms |
+| 集成 | 多个组件 + 真实 DB/MQ | SpringBootTest + Testcontainers | 25% | 1-5s |
+| E2E | 完整请求链路 | MockMvc / RestAssured / Cypress | 5% | 5-30s |
 
-理解 可重复执行 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+**反模式 - 冰淇淋甜筒**: 顶上一大坨 E2E, 底下没单元测试 → 跑一次 30 分钟, 改任何一行都炸。
 
-### 3. 断言设计
+### 2. JUnit 5 关键能力
 
-理解 断言设计 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+```java
+@DisplayName("PostService 测试")
+class PostServiceTest {
 
-### 4. 测试命名
+    @BeforeEach
+    void setUp() { /* 每个 test 前跑 */ }
 
-理解 测试命名 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+    @AfterEach
+    void tearDown() { /* 每个 test 后跑 */ }
 
-### 5. 边界用例
+    @Test
+    void shouldCreatePost_whenValidInput() { /* 命名: should_when */ }
 
-理解 边界用例 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+    @ParameterizedTest
+    @ValueSource(strings = {"", " ", "\t"})
+    void shouldRejectBlankTitle(String title) {
+        assertThatThrownBy(() -> service.create(title, "body"))
+            .isInstanceOf(IllegalArgumentException.class)
+            .hasMessageContaining("title");
+    }
 
-## 三、工作原理
+    @Nested
+    @DisplayName("当用户未登录")
+    class WhenAnonymous { /* 嵌套分组 */ }
 
-| 维度 | 要点 | 你需要能说清 |
+    @Test
+    @Disabled("flaky, see #123")
+    void racyTest() { }
+}
+```
+
+### 3. Mockito 4 板斧
+
+```java
+@ExtendWith(MockitoExtension.class)
+class PostServiceTest {
+    @Mock PostRepository repo;
+    @Mock UserService userService;
+    @InjectMocks PostService service;     // 自动构造注入
+
+    @Test
+    void shouldReturnPost_whenIdExists() {
+        // 1. given: stub
+        when(repo.findById(1L)).thenReturn(Optional.of(new Post(1L, "hello")));
+
+        // 2. when: 执行
+        Post result = service.findById(1L);
+
+        // 3. then: 断言
+        assertThat(result.getTitle()).isEqualTo("hello");
+
+        // 4. verify: 行为
+        verify(repo, times(1)).findById(1L);
+        verifyNoMoreInteractions(userService);
+    }
+
+    @Test
+    void shouldThrow_whenIdNotExist() {
+        when(repo.findById(anyLong())).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.findById(99L))
+            .isInstanceOf(PostNotFoundException.class);
+    }
+
+    @Test
+    void shouldCaptureArgument() {
+        var captor = ArgumentCaptor.forClass(Post.class);
+        service.create("t", "b");
+        verify(repo).save(captor.capture());
+        assertThat(captor.getValue().getAuthor()).isNotNull();
+    }
+}
+```
+
+**坑**:
+- `@Mock` 字段必须配合 `@ExtendWith(MockitoExtension.class)` 才生效
+- `when(...).thenReturn` 不能 stub final 方法 (除非加 mockito-inline)
+- `verify` 默认 `times(1)`, 不要漏写
+
+### 4. AssertJ 链式断言
+
+```java
+// JUnit 原生 (难读)
+assertEquals(3, list.size());
+assertTrue(list.contains("a"));
+
+// AssertJ (推荐)
+assertThat(list)
+    .hasSize(3)
+    .contains("a", "b")
+    .doesNotContain("z")
+    .containsExactlyInAnyOrder("a", "b", "c");
+
+// 对象
+assertThat(user)
+    .extracting(User::getName, User::getAge)
+    .containsExactly("Tom", 25);
+
+// 异常
+assertThatThrownBy(() -> service.divide(1, 0))
+    .isInstanceOf(ArithmeticException.class)
+    .hasMessageContaining("zero");
+```
+
+### 5. Spring Boot 测试切片
+
+| 注解 | 加载范围 | 用途 | 速度 |
+|---|---|---|---|
+| `@SpringBootTest` | 完整 context | 集成测试 | 慢 (3-10s) |
+| `@WebMvcTest(PostController.class)` | 只 Web 层 | Controller 单测 | 快 (1-2s) |
+| `@DataJpaTest` | 只 JPA + 嵌入式 DB | Repository 测试 | 快 (1-2s) |
+| `@JsonTest` | 只 Jackson | 序列化测试 | 极快 |
+| `@RestClientTest` | 只 RestTemplate | 客户端测试 | 极快 |
+
+```java
+@WebMvcTest(PostController.class)
+class PostControllerTest {
+    @Autowired MockMvc mvc;
+    @MockBean PostService service;    // 注意是 @MockBean 不是 @Mock
+
+    @Test
+    void shouldReturn200() throws Exception {
+        when(service.findById(1L)).thenReturn(new Post(1L, "hello"));
+        mvc.perform(get("/api/v1/posts/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.title").value("hello"));
+    }
+}
+```
+
+### 6. Testcontainers (真实依赖)
+
+H2 嵌入式 DB 行为和 MySQL 有差异 (语法 / 函数 / 大小写), 集成测试推荐用 **真容器**:
+
+```java
+@SpringBootTest
+@Testcontainers
+class PostIntegrationTest {
+    @Container
+    static MySQLContainer<?> mysql = new MySQLContainer<>("mysql:8.4")
+        .withDatabaseName("blog")
+        .withUsername("test")
+        .withPassword("test");
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", mysql::getJdbcUrl);
+        r.add("spring.datasource.username", mysql::getUsername);
+        r.add("spring.datasource.password", mysql::getPassword);
+    }
+
+    @Autowired PostRepository repo;
+
+    @Test
+    void shouldPersistPost() {
+        var saved = repo.save(new Post(null, "hello", "body"));
+        assertThat(saved.getId()).isNotNull();
+    }
+}
+```
+
+**static 容器**: 多个测试类共用一个容器实例, 启动一次。 否则每个类 30 秒, 100 个类 = 50 分钟。
+
+### 7. 数据准备 (Test Fixture)
+
+```java
+// 方式 1: @Sql 注解
+@Sql({"/sql/init.sql","/sql/posts.sql"})
+@Test
+void shouldFindAll() { ... }
+
+// 方式 2: TestEntityManager (DataJpaTest)
+@Test
+void shouldFindByAuthor() {
+    em.persist(new Post(...));
+    em.flush();
+    var found = repo.findByAuthorId(1L);
+    assertThat(found).hasSize(1);
+}
+
+// 方式 3: builder (PostFixture)
+public class PostFixture {
+    public static Post.PostBuilder defaultPost() {
+        return Post.builder()
+            .title("default-title")
+            .body("default-body")
+            .authorId(1L)
+            .createdAt(LocalDateTime.now());
+    }
+}
+// 用: PostFixture.defaultPost().title("自定义").build()
+```
+
+### 8. 覆盖率 (JaCoCo)
+
+```xml
+<plugin>
+    <groupId>org.jacoco</groupId>
+    <artifactId>jacoco-maven-plugin</artifactId>
+    <version>0.8.12</version>
+    <executions>
+        <execution>
+            <goals><goal>prepare-agent</goal></goals>
+        </execution>
+        <execution>
+            <id>report</id>
+            <phase>test</phase>
+            <goals><goal>report</goal></goals>
+        </execution>
+        <execution>
+            <id>check</id>
+            <goals><goal>check</goal></goals>
+            <configuration>
+                <rules>
+                    <rule>
+                        <element>BUNDLE</element>
+                        <limits>
+                            <limit>
+                                <counter>LINE</counter>
+                                <minimum>0.60</minimum>
+                            </limit>
+                        </limits>
+                    </rule>
+                </rules>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+```
+
+`mvn test` 后看 `target/site/jacoco/index.html`。
+
+**坑**: 覆盖率高 ≠ 测试好。 全是 `assertThat(result).isNotNull()` 也能 100% 覆盖率, 但没断言业务逻辑。
+
+### 9. Mutation Testing (PIT)
+
+JaCoCo 只看"代码被执行", PIT 主动 **改坏你的代码** (如把 `>` 改成 `<`), 然后跑测试 — 测试没失败 = 测试无效。
+
+```xml
+<plugin>
+    <groupId>org.pitest</groupId>
+    <artifactId>pitest-maven</artifactId>
+    <version>1.16.0</version>
+</plugin>
+```
+
+`mvn org.pitest:pitest-maven:mutationCoverage` 看 mutation score。 目标 > 60%。
+
+## 三、命名约定
+
+```java
+// 推荐: should_<expectedResult>_when_<condition>
+shouldReturnUser_whenIdExists()
+shouldThrow_whenIdNotFound()
+shouldRejectBlankTitle()
+
+// 或: <method>_<scenario>_<expected>
+findById_existing_returnsUser()
+findById_missing_throws()
+```
+
+## 四、常见坑
+
+| 坑 | 后果 | 处理 |
 |---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| 测试依赖运行顺序 | 偶发失败 | 每个 test 独立 + `@DirtiesContext` 或 `@Transactional` 回滚 |
+| 测试共用静态状态 | 互相污染 | `@BeforeEach` 重置, 不用 static |
+| Mock 一切 (Service mock Repo mock Mapper) | 测的是 mock, 不是逻辑 | 找出最有价值的层, 集成测试覆盖整链 |
+| H2 替代 MySQL | 语法兼容失败上线才发现 | Testcontainers 真 MySQL |
+| 测试代码不审 review | 烂测试越积越多 | 测试也是代码, 同样要 review |
+| `@SpringBootTest` 滥用 | 跑一次 5 分钟 | 用切片注解 (`@WebMvcTest` 等) |
+| sleep 等异步 | 慢且 flaky | `Awaitility.await().until(...)` |
+| 测试代码硬编码当前时间 | 跨时区/明年挂 | 注入 `Clock`, 测试用 `Clock.fixed` |
 
-## 四、项目使用场景
+## 五、面试高频
 
-在博客后端项目中，本章能力会服务于以下场景：
+1. 测试金字塔 3 层是哪些? 比例?
+2. `@Mock` 和 `@MockBean` 区别?
+3. `@SpringBootTest` 和 `@WebMvcTest` 选哪个? 性能差距?
+4. 怎么测 controller? 怎么测 service?
+5. Testcontainers 解决了什么? H2 行不行?
+6. 异步 (CompletableFuture / @Async / MQ) 怎么测?
+7. 覆盖率多少合适? mutation testing 是什么?
+8. 测试代码可以 review 吗? 测试代码也算技术债吗?
+9. TDD 你实践过吗?
+10. 集成测试慢怎么办? (并行 / 容器复用 / @DirtiesContext 谨慎用)
 
-- 完成“补齐核心接口测试”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+## 六、Demo / 任务
 
-## 五、常见问题与坑
-
-| 问题 | 后果 | 处理方式 |
-|---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
-
-## 六、面试高频问题
-
-1. 测试策略 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“补齐核心接口测试”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+- Demo: 给 PostService 写完整测试 (单元 + 集成 + Controller)
+- Task: 博客 API 覆盖率到 60%, 关键路径全部集成测试, CI 中跑测试 + JaCoCo + PIT

@@ -1,40 +1,142 @@
-# Chapter 42 JWT实战 - 项目任务
+# Chapter 42 JWT 实战 - 项目任务
 
 ## 任务概述
 
-本章项目任务是：**实现登录注册接口**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+把 41 章的"UUID token + Redis"方案升级为 **JWT 双 token（Access 15min + Refresh 7d）+ 黑名单退出 + 用户版本号撤销**。完成后博客系统具备生产级认证能力。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **JWT实战** 能力，不能只停留在知识点阅读。
+41 章 token 存 Redis，每次验证都要查 Redis，且无法跨服务共享。JWT 后：
+
+- 多服务无状态验签，网关层即可拦截非法请求
+- 改密 / 封禁能立即生效（版本号方案）
+- 主动退出依赖黑名单（仅退出场景写 Redis，平时不写）
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 Access Token、Refresh Token、拦截器、续签 的关键点。
-2. 实现或设计“实现登录注册接口”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：引入 JJWT 依赖（10 分钟）
+
+```xml
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-api</artifactId>
+    <version>0.12.6</version>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-impl</artifactId>
+    <version>0.12.6</version>
+    <scope>runtime</scope>
+</dependency>
+<dependency>
+    <groupId>io.jsonwebtoken</groupId>
+    <artifactId>jjwt-jackson</artifactId>
+    <version>0.12.6</version>
+    <scope>runtime</scope>
+</dependency>
+```
+
+### Step 2：配置 + 密钥（15 分钟）
+
+`application.yml`：
+
+```yaml
+jwt:
+  secret: ${JWT_SECRET}              # base64 编码的 32 字节
+  access-ttl: 900000                 # 15 min
+  refresh-ttl: 604800000             # 7 d
+  issuer: blog-api
+```
+
+生成密钥：
+
+```bash
+# 32 字节 = 256 bit，HS256 最小要求
+openssl rand -base64 32
+export JWT_SECRET="..."
+```
+
+**严禁**把 secret 进 Git。`.env.example` 放占位，真正的值放 shell / 容器环境变量 / Vault。
+
+### Step 3：JwtService（60 分钟）
+
+实现 `issue / verify / blacklist / refresh` 四个方法（见 03-check.md Q4）。
+
+要求：
+- 用 `Jwts.parser().verifyWith(key()).build()` 构造解析器，显式校验签名。
+- access 和 refresh 在 payload 里加 `type` 字段区分。
+- jti 用 `UUID.randomUUID().toString()`。
+- 黑名单 key 用 jti：`jwt:blacklist:{jti}`。
+
+### Step 4：替换 41 章的 TokenAuthFilter（30 分钟）
+
+把 `TokenAuthFilter` 改为 `JwtAuthFilter`：
+
+- 从 `Authorization: Bearer xxx` 取 token
+- `jwtService.verify(token)` 验签 + 黑名单 + 用户版本号
+- 把 userId + roles 写入 SecurityContext
+- 验签失败 → clearContext（不抛异常，让 Security 默认 401）
+
+把 41 章 Redis 里的 token 数据迁移：
+
+```bash
+# 让所有用户重登
+redis-cli --scan --pattern 'auth:token:*' | xargs redis-cli del
+```
+
+### Step 5：登录 / 退出 / 刷新（45 分钟）
+
+```
+POST /api/v1/auth/login    → 返回 { access, refresh }
+POST /api/v1/auth/refresh  → 用 refresh 换新 (access, refresh)，旧 refresh 立即作废
+POST /api/v1/auth/logout   → 把当前 access 加黑名单，删 refresh
+```
+
+### Step 6：用户版本号撤销机制（45 分钟）
+
+```sql
+ALTER TABLE user ADD COLUMN token_version INT DEFAULT 0;
+```
+
+- 改密接口：成功后 `token_version + 1`，清除 user-status 缓存
+- 封禁接口（管理员）：`status = 0`，清除缓存
+- `JwtService.verify` 增加：取 user-status 缓存对比 `tokenVersion` 和 `status`
+
+### Step 7：测试（45 分钟）
+
+- `JwtServiceTest`：签发 → 解析 sub / exp / roles。
+- `JwtAuthFilterIT`：合法 token → 200；篡改 → 401；过期 → 401；黑名单 → 401。
+- `RefreshIT`：refresh 成功；旧 refresh 复用 → 401 + 所有 refresh 失效。
+- `RevokeIT`：改密后旧 token 立即失效。
 
 ## 交付物
 
-- [ ] 完成“实现登录注册接口”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] `auth/JwtService` + `auth/JwtAuthFilter` + `auth/UserStatusCache`
+- [ ] `application.yml` 中 JWT 配置（secret 从环境变量读）
+- [ ] `auth/AuthController` 实现 login/refresh/logout
+- [ ] `user` 表新增 `token_version` `status` 字段，含迁移 SQL
+- [ ] 4 类测试用例全绿
+- [ ] README 更新："认证"段落改为 JWT 流程图 + curl 示例
+- [ ] git commit：`ch42: JWT auth with refresh rotation + blacklist + version revocation`
 
 ## 验收清单
 
 | 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+|--------|------|
+| 签发 access | 长度约 200+ 字符，base64url 三段 |
+| 验签 | 篡改 payload 后请求 → 401 `signature mismatch` |
+| 过期 | 等 15min 后访问 → 401 `token expired` |
+| 退出 | 退出后旧 access 访问 → 401 `token revoked` |
+| Refresh 轮换 | 旧 refresh 复用 → 401 + 该用户所有 refresh 被吊销 |
+| 改密生效 | 改密后旧 access 立即 401 |
+| 封号生效 | 封号后旧 access 立即 401 |
+| secret 未入 Git | `git log -p` grep `JWT_SECRET` 无明文 |
+| 多实例验证 | 启动 2 个端口 8080 / 8081，token 互通 |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **RS256 升级**：从 HS256（对称）换 RS256（非对称），公钥下发给前端 / 网关验签。
+2. **JWKs 端点**：暴露 `/.well-known/jwks.json`，符合 OIDC 标准。
+3. **设备级管理**：refresh 加 `deviceId` claim，"退出所有设备"删 `refresh:{userId}:*`。
+4. **审计日志**：所有 issue / refresh / blacklist 操作写 `auth_audit` 表，含 IP/UA/ts。
+5. **接 Spring Security 标准 OAuth2 Resource Server**：用 `spring-boot-starter-oauth2-resource-server`，把自己实现的 Filter 退役。

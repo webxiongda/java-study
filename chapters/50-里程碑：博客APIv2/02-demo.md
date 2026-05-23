@@ -2,49 +2,217 @@
 
 ## Demo 目标
 
-完成一个围绕 **交付简历级博客 API v2** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+把 41-49 章的能力 **拼装成一个完整的运行系统**:
+- 用户 注册 → 登录 → 上传头像 → 发文章 (带图) → 评论 → 看排行榜
+- 全链路 200, 涉及 MySQL / Redis / RabbitMQ / MinIO 四个中间件
+- Docker Compose 一键起
 
 ## 前置条件
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+- JDK 21, Maven 3.9+
+- Docker + Docker Compose
+- 41-49 章的代码都已经合并到 `backend/`
 
-## 实操步骤
+## 一、docker-compose.yml (中间件全家桶)
 
-1. 创建本章练习分支或目录，名称包含 chapter-50。
-2. 根据“认证、权限、缓存、安全、文件上传整合”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：里程碑：博客APIv2 在博客项目中承担什么责任。
+```yaml
+version: "3.8"
 
-## 示例代码
+services:
+  mysql:
+    image: mysql:8.4
+    ports: ["3306:3306"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: blog
+    volumes: ["./data/mysql:/var/lib/mysql"]
 
-~~~java
-public ArticleDetail getArticle(Long id) {
-    String key = "article:detail:" + id;
-    ArticleDetail cached = redisTemplate.opsForValue().get(key);
-    if (cached != null) return cached;
-    ArticleDetail detail = articleRepository.getDetail(id);
-    redisTemplate.opsForValue().set(key, detail, Duration.ofMinutes(10));
-    return detail;
+  redis:
+    image: redis:7.4-alpine
+    ports: ["6379:6379"]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports: ["5672:5672","15672:15672"]
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin123
+
+  minio:
+    image: minio/minio:latest
+    ports: ["9000:9000","9001:9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9001"
+    volumes: ["./data/minio:/data"]
+```
+
+```bash
+docker compose up -d
+```
+
+## 二、application.yml (整合配置)
+
+```yaml
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/blog?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  rabbitmq:
+    host: localhost
+    username: admin
+    password: admin123
+    publisher-confirm-type: correlated
+    listener:
+      simple:
+        acknowledge-mode: manual
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+
+storage:
+  endpoint: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin123
+  bucket: blog
+
+jwt:
+  secret: ${JWT_SECRET:change-me-32-chars-min-change-me}
+  expire-minutes: 60
+
+logging:
+  level:
+    com.javastudy: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+```
+
+## 三、端到端联调脚本
+
+```bash
+# 0. 启动
+mvn -pl backend spring-boot:run
+
+# 1. 注册
+curl -s -X POST localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"Passw0rd!","email":"alice@a.com"}'
+
+# 2. 登录, 拿 token
+TOKEN=$(curl -s -X POST localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"Passw0rd!"}' | jq -r .data.token)
+echo $TOKEN
+
+# 3. 上传头像
+curl -s -X POST localhost:8080/api/v1/upload/avatar \
+  -H "Authorization: Bearer $TOKEN" \
+  -F file=@./avatar.png
+
+# 4. 发文章 (带 XSS 测试)
+curl -s -X POST localhost:8080/api/v1/posts \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Hello","content":"<p>hi</p><script>alert(1)</script>"}'
+
+# 期望 content 净化后只剩 <p>hi</p>
+
+# 5. 看文章 (第一次走 DB, 第二次走 Redis)
+curl -s localhost:8080/api/v1/posts/1
+curl -s localhost:8080/api/v1/posts/1   # log: cache hit
+
+# 6. 评论 (异步通知)
+curl -s -X POST localhost:8080/api/v1/posts/1/comments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"first!"}'
+
+# RabbitMQ 控制台 (localhost:15672) 看 comment.notify 队列消息流过
+
+# 7. 热门排行
+curl -s localhost:8080/api/v1/posts/hot
+
+# 8. 限流测试 (Ch45 装的 5 次/分钟)
+for i in {1..10}; do
+  curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8080/api/v1/auth/login \
+    -H "Content-Type: application/json" -d '{"username":"x","password":"x"}'
+done
+# 后 5 个应返回 429
+```
+
+## 四、关键整合代码
+
+### SecurityConfig (Ch44) 与 RateLimitFilter (Ch45) 协作
+
+```java
+@Bean
+SecurityFilterChain chain(HttpSecurity http, JwtFilter jwt, RateLimitFilter rl) throws Exception {
+    return http
+        .csrf(c -> c.disable())
+        .cors(c -> {})
+        .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
+        .authorizeHttpRequests(a -> a
+            .requestMatchers("/api/v1/auth/**","/api/v1/posts","/api/v1/posts/**").permitAll()
+            .requestMatchers(HttpMethod.POST,"/api/v1/posts").authenticated()
+            .anyRequest().authenticated())
+        .addFilterBefore(rl, UsernamePasswordAuthenticationFilter.class)
+        .addFilterBefore(jwt, UsernamePasswordAuthenticationFilter.class)
+        .headers(h -> h
+            .contentSecurityPolicy(c -> c.policyDirectives("default-src 'self'"))
+            .frameOptions(f -> f.deny()))
+        .build();
 }
-~~~
+```
 
-## 运行与验证
+### PostService 整合缓存 + Jsoup + MQ
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+```java
+@Transactional
+public PostVO create(PostCreateReq req, Long uid) {
+    String safe = Jsoup.clean(req.getContent(), Safelist.basicWithImages());
+    Post post = Post.builder().userId(uid).title(req.getTitle()).content(safe).build();
+    mapper.insert(post);
+    outbox.save("post.created", Map.of("id", post.getId(), "uid", uid));
+    return postCache.toVO(post);
+}
 
-## 建议提交信息
+public PostVO getDetail(Long id) {
+    return postCache.get(id, () -> {
+        Post p = mapper.selectById(id);
+        if (p == null) throw new BizException(404, "post not found");
+        return PostVO.of(p);
+    });
+}
+```
 
-~~~bash
-git add .
-git commit -m "chapter 50: 里程碑：博客APIv2 demo"
-~~~
+## 五、验证清单
+
+| 项 | 命令 | 预期 |
+|---|---|---|
+| 启动 | `docker compose up -d && mvn spring-boot:run` | 4 容器 healthy, 应用 actuator/health = UP |
+| 注册登录 | 上面脚本 1-2 | 返回 JWT |
+| 上传 | 上面脚本 3 | MinIO 控制台 (9001) 看到对象 |
+| XSS 防护 | 上面脚本 4 | DB content 不含 `<script>` |
+| 缓存 | 重复 GET | 第二次 log "cache hit" |
+| 异步 | 评论 | RabbitMQ 队列消息消费成功 |
+| 限流 | 循环 10 次 | 后 5 次 429 |
+| 故障降级 | `docker stop redis`, 再 GET | 仍 200, 走 DB |
+
+## 六、提交
+
+```bash
+git add backend docker-compose.yml
+git commit -m "ch50: blog API v2 integration (auth + cache + security + upload + mq)"
+git tag v2.0
+```

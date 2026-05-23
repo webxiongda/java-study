@@ -2,39 +2,116 @@
 
 ## 任务概述
 
-本章项目任务是：**实现管理员权限控制**。任务必须服务于最终目标：能独立交付 Spring Boot REST API，并能在面试中讲清设计和实现。
+在 42 章 JWT 基础上加 **RBAC 鉴权 + 数据级权限**：所有写操作都要鉴权，普通用户只能改自己的文章，管理员可改任何文章，`/admin/**` 路径只有管理员能访问。
 
 ## 业务背景
 
-博客系统需要逐步具备数据访问、接口设计、认证授权、缓存、安全、测试、部署和面试包装能力。本章负责补齐其中的 **权限控制** 能力，不能只停留在知识点阅读。
+42 章解决"你是谁"，43 章解决"你能做什么"。没有权限控制，任何登录用户都能删别人的文章——这是 P0 安全事故。生产 Web 系统必须：
+
+- 接口级：哪些角色 / 权限能调
+- 数据级：能调，但只能操作自己的数据
 
 ## 任务拆解
 
-1. 阅读本章理论文档，提取 RBAC、角色、权限、资源鉴权、管理员接口 的关键点。
-2. 实现或设计“实现管理员权限控制”的最小闭环。
-3. 补充边界处理：非法输入、空数据、重复操作、依赖失败或并发冲突。
-4. 用测试、日志、SQL、HTTP 请求或截图证明结果。
-5. 写下你会如何向面试官介绍这部分实现。
+### Step 1：RBAC 5 表 + 种子数据（30 分钟）
+
+按 02-demo.md 的 SQL 建 `role` / `permission` / `user_role` / `role_permission`。
+
+种子数据：
+- 角色：ADMIN、USER
+- 权限：`post:read`、`post:write`、`post:delete-any`、`user:manage`
+- ADMIN 拿全部权限，USER 拿 `post:read`、`post:write`
+- 注册新用户时自动绑 USER 角色
+
+### Step 2：UserMapper.findAuthsByUsername（30 分钟）
+
+写一条三表 JOIN SQL，返回 `UserWithAuthsDO { id, username, passwordHash, roles, permissions }`。
+
+用 `<collection>` resultMap 处理多对多。
+
+### Step 3：签 JWT 时塞 roles + perms（15 分钟）
+
+修改 41 / 42 章的 `AuthService.login`，调用 `findAuthsByUsername` 后，把 roles 和 perms 写入 JWT claims。
+
+### Step 4：JwtAuthFilter 注入 SecurityContext（30 分钟）
+
+- roles 加 `ROLE_` 前缀，perms 不加。
+- 全部转 `SimpleGrantedAuthority`，写入 `UsernamePasswordAuthenticationToken.authorities`。
+
+### Step 5：URL 级控制 + 方法级控制（45 分钟）
+
+`SecurityConfig`：
+
+```java
+.requestMatchers(HttpMethod.GET, "/api/v1/posts/**").permitAll()
+.requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+.requestMatchers(HttpMethod.POST, "/api/v1/posts").hasAuthority("post:write")
+.anyRequest().authenticated()
+```
+
+`@EnableMethodSecurity` + Service 层 `@PreAuthorize`：
+
+```java
+@PreAuthorize("hasRole('ADMIN') or @postSec.isOwner(#id, authentication)")
+public void update(Long id, ...) { ... }
+```
+
+`@Component("postSec") PostSecurityChecker.isOwner` 查 `post.author_id` 与当前用户对比。
+
+### Step 6：AdminController（30 分钟）
+
+```
+GET    /api/v1/admin/users         列出所有用户（分页）
+PUT    /api/v1/admin/users/{id}/disable  封禁
+DELETE /api/v1/admin/posts/{id}    删任意文章
+```
+
+类级 `@PreAuthorize("hasRole('ADMIN')")`。
+
+### Step 7：测试（60 分钟）
+
+- `PostServiceTest`：`@WithMockUser(authorities="post:write")` 调 create → ok；不带 → AccessDeniedException。
+- `PostSecurityCheckerTest`：自己 / 他人 / null 三种 case。
+- `RbacIT`：完整链路。alice 改自己 200、bob 改 alice 403、admin 改 alice 200、alice 调 admin 接口 403。
+
+### Step 8：补全异常处理 + 日志（30 分钟）
+
+- `GlobalExceptionHandler` 加：
+  - `AuthenticationException` → 401
+  - `AccessDeniedException` → 403
+- 所有 403 记日志 `WARN`，含 userId / resource / action，便于审计。
 
 ## 交付物
 
-- [ ] 完成“实现管理员权限控制”的代码或设计文档。
-- [ ] 补充 README：背景、运行方式、核心流程、验证结果。
-- [ ] 保留至少 1 个正常场景和 1 个失败场景的验证记录。
-- [ ] 整理本章面试表达，控制在 2 分钟内能讲完。
+- [ ] 5 张 RBAC 表 + 种子数据 SQL
+- [ ] `UserMapper.findAuthsByUsername`（含 collection resultMap）
+- [ ] `AuthService.login` 把 roles + perms 写入 JWT
+- [ ] `JwtAuthFilter` 解析 roles + perms 进 SecurityContext
+- [ ] `SecurityConfig` URL 级规则
+- [ ] `PostService` 加 `@PreAuthorize`
+- [ ] `PostSecurityChecker` + 单测
+- [ ] `AdminController` 至少 3 个接口
+- [ ] 端到端集成测试覆盖 6 个场景
+- [ ] README 加"权限模型"段落（含 ER 图 / 表）
+- [ ] git commit：`ch43: RBAC + data-level ownership check`
 
 ## 验收清单
 
 | 验收项 | 标准 |
-|---|---|
-| 可运行 | 有明确命令、入口或请求示例 |
-| 可解释 | 能讲清为什么这样设计，而不是只说“框架要求” |
-| 可排查 | 出错时有日志、错误信息或检查步骤 |
-| 可扩展 | 后续章节能继续复用，不需要整体推倒重来 |
-| 可面试 | 能提炼 2-3 个技术亮点和 1 个踩坑点 |
+|--------|------|
+| 未认证写操作 | 401 |
+| 普通用户调 admin | 403 |
+| 普通用户改他人文章 | 403 |
+| 普通用户改自己文章 | 200 |
+| 管理员改任何人文章 | 200 |
+| 撤销 USER 的 `post:write` | 当前 token 内仍能写，下次登录失效（与 42 章一致） |
+| 审计日志 | 403 时 log 含 userId / path / method |
+| Swagger 安全标记 | 写接口加 `@SecurityRequirement(name="bearer")` |
 
 ## 扩展挑战
 
-1. 把本章能力接入前面已经完成的博客项目代码。
-2. 增加一个真实业务边界场景，例如重复提交、权限不足、缓存失效或数据库异常。
-3. 写一段项目亮点描述，模拟写进简历。
+1. **`@DataScope` 注解 + MyBatis Interceptor**（见 03-check.md Q4）：业务方法零侵入注入 `WHERE author_id = ?`。
+2. **权限管理后台接口**：`POST /admin/users/{id}/roles` 给用户分角色，触发 `bumpTokenVersion` 让旧 token 立即失效。
+3. **审计表**：`auth_audit(user_id, action, resource_id, granted, ts, ip)`，所有鉴权决策落表，便于查"谁在什么时候删了什么"。
+4. **接 Casbin / OPA**：把策略从代码 / 注解搬到外部策略文件，体验 ABAC。
+5. **超大用户量优化**（见 03-check.md Q5）：JWT 瘦身、缓存权限、版本号撤销。

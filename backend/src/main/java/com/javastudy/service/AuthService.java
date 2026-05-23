@@ -28,11 +28,8 @@ public class AuthService {
         if (userRepository.existsByUsername(request.username())) {
             throw new IllegalArgumentException("账号已存在");
         }
-        boolean firstUser = userRepository.count() == 0;
         var user = userRepository.save(new User(request.username().trim(), passwordEncoder.encode(request.secret())));
-        if (firstUser) {
-            initialImportService.importFor(user);
-        }
+        initialImportService.importFor(user);
         return response(user);
     }
 
@@ -54,8 +51,8 @@ public class AuthService {
     }
 
     private void validate(AuthDtos.AuthRequest request) {
-        if (request.username() == null || !request.username().matches("[A-Za-z0-9_\\-]{3,64}")) {
-            throw new IllegalArgumentException("账号只能包含字母、数字、下划线和短横线，长度 3-64");
+        if (request.username() == null || !request.username().trim().matches("[\\p{L}\\p{N}_\\-]{2,64}")) {
+            throw new IllegalArgumentException("账号只能包含中文、字母、数字、下划线和短横线，长度 2-64");
         }
         if (request.secret() == null || request.secret().length() < 16) {
             throw new IllegalArgumentException("密钥至少 16 位");

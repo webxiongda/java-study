@@ -2,47 +2,187 @@
 
 ## Demo 目标
 
-完成一个围绕 **模拟多线程下载任务** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+亲手体验 5 个并发基础: 线程创建 / 中断 / 状态转换 / volatile 可见性 / wait-notify 生产消费。
 
-## 前置条件
+## 一、Runnable / Callable / 虚拟线程
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+```java
+public class CreateThreadDemo {
+    public static void main(String[] args) throws Exception {
+        // 1. Runnable
+        Thread t1 = new Thread(() -> System.out.println("runnable on " + Thread.currentThread()));
+        t1.start();
+        t1.join();
 
-## 实操步骤
+        // 2. Callable + Future
+        ExecutorService es = Executors.newSingleThreadExecutor();
+        Future<Integer> f = es.submit(() -> {
+            Thread.sleep(100);
+            return 42;
+        });
+        System.out.println("callable result = " + f.get());
+        es.shutdown();
 
-1. 创建本章练习分支或目录，名称包含 chapter-51。
-2. 根据“Thread、Runnable、Callable、线程状态、join”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：并发基础 在博客项目中承担什么责任。
+        // 3. 虚拟线程 (JDK 21)
+        Thread.startVirtualThread(() -> System.out.println("virtual " + Thread.currentThread()))
+              .join();
+    }
+}
+```
 
-## 示例代码
+运行预期: 三种创建方式都打印, 虚拟线程名形如 `VirtualThread[#XX]/runnable@ForkJoinPool-1-worker-1`。
 
-~~~java
-ExecutorService pool = Executors.newFixedThreadPool(4);
-List<CompletableFuture<String>> tasks = urls.stream()
-    .map(url -> CompletableFuture.supplyAsync(() -> download(url), pool))
-    .toList();
-CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])).join();
-pool.shutdown();
-~~~
+## 二、合作式中断 (永远不要用 stop)
 
-## 运行与验证
+```java
+public class InterruptDemo {
+    public static void main(String[] args) throws InterruptedException {
+        Thread worker = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    System.out.println("working...");
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    System.out.println("got interrupt, exit");
+                    Thread.currentThread().interrupt();   // 重置中断位, 跳出 while
+                }
+            }
+        });
+        worker.start();
+        Thread.sleep(2000);
+        worker.interrupt();
+        worker.join();
+        System.out.println("worker done");
+    }
+}
+```
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+**故意做错示范**: 删掉 `Thread.currentThread().interrupt();` → 线程永远不退出 (sleep 抛 InterruptedException 时清除了中断位)。
 
-## 建议提交信息
+## 三、volatile 可见性
 
-~~~bash
-git add .
-git commit -m "chapter 51: 并发基础 demo"
-~~~
+```java
+public class VolatileDemo {
+    private static boolean STOP = false;        // 改成 volatile 试对比
+    // private static volatile boolean STOP = false;
+
+    public static void main(String[] args) throws InterruptedException {
+        Thread reader = new Thread(() -> {
+            long c = 0;
+            while (!STOP) c++;
+            System.out.println("reader exit, count=" + c);
+        });
+        reader.start();
+        Thread.sleep(1000);
+        STOP = true;
+        System.out.println("main set STOP = true");
+        reader.join(3000);
+        if (reader.isAlive()) System.out.println("reader STILL ALIVE -- 可见性问题!");
+    }
+}
+```
+
+**预期**:
+- 不加 volatile (JIT 优化 + 缓存): reader 永远跑不出来 (大概率)
+- 加 volatile: reader 1 秒后正常退出
+
+## 四、wait / notify 经典生产消费
+
+```java
+public class WaitNotifyDemo {
+    static final Queue<Integer> Q = new LinkedList<>();
+    static final int CAP = 5;
+
+    public static void main(String[] args) {
+        new Thread(WaitNotifyDemo::produce, "P").start();
+        new Thread(WaitNotifyDemo::consume, "C").start();
+    }
+
+    static void produce() {
+        try {
+            for (int i = 0; ; i++) {
+                synchronized (Q) {
+                    while (Q.size() >= CAP) Q.wait();
+                    Q.offer(i);
+                    System.out.println("produced " + i);
+                    Q.notifyAll();
+                }
+                Thread.sleep(100);
+            }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    static void consume() {
+        try {
+            while (true) {
+                synchronized (Q) {
+                    while (Q.isEmpty()) Q.wait();
+                    Integer item = Q.poll();
+                    System.out.println("consumed " + item);
+                    Q.notifyAll();
+                }
+                Thread.sleep(300);
+            }
+        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+}
+```
+
+**坑点**: 必须 `while (Q.isEmpty())` 不能 `if`, 因为虚假唤醒 (spurious wakeup) 会让 wait 在没有 notify 的情况下返回。
+
+## 五、线程状态可视化
+
+```java
+public class StateDemo {
+    public static void main(String[] args) throws InterruptedException {
+        Object lock = new Object();
+        Thread t = new Thread(() -> {
+            synchronized (lock) {
+                try { Thread.sleep(2000); } catch (InterruptedException ignored) {}
+            }
+        }, "worker");
+
+        System.out.println("before start: " + t.getState());   // NEW
+        t.start();
+        Thread.sleep(100);
+        System.out.println("after sleep: " + t.getState());    // TIMED_WAITING
+
+        Thread blocker = new Thread(() -> {
+            synchronized (lock) {}
+        }, "blocker");
+        blocker.start();
+        Thread.sleep(100);
+        System.out.println("blocker: " + blocker.getState());  // BLOCKED
+
+        t.join();
+        System.out.println("after join: " + t.getState());     // TERMINATED
+    }
+}
+```
+
+## 六、运行与验证
+
+```bash
+javac CreateThreadDemo.java && java CreateThreadDemo
+javac InterruptDemo.java   && java InterruptDemo
+javac VolatileDemo.java    && java -server VolatileDemo   # -server 模式更容易复现可见性问题
+javac WaitNotifyDemo.java  && java WaitNotifyDemo
+javac StateDemo.java       && java StateDemo
+```
+
+## 七、常见坑
+
+| 坑 | 现象 | 修复 |
+|---|---|---|
+| 调 t.run() 不是 t.start() | 在主线程同步执行 | 必须 start |
+| catch InterruptedException 后吞 | 父线程没法中断 | `Thread.currentThread().interrupt()` |
+| 标志位不加 volatile | 别的线程改了看不到 | 加 volatile, 或用 AtomicBoolean |
+| wait 用 if | 虚假唤醒导致非法状态 | 永远 while |
+| 在不持有 monitor 时调 wait/notify | IllegalMonitorStateException | 必须 synchronized 块内 |
+
+## 八、提交
+
+```bash
+git add backend/src/test/java/concurrency/
+git commit -m "ch51: concurrency basics demos (interrupt/volatile/wait-notify/states)"
+```

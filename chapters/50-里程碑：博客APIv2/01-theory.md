@@ -2,66 +2,129 @@
 
 ## 一、学习定位
 
-本章主题是 **里程碑：博客APIv2**，核心内容包括：认证、权限、缓存、安全、文件上传整合。它在 Java 后端路线中的作用不是单独记 API，而是把前面学过的 Java 基础逐步落到真实后端项目里。
+这是 **第二个里程碑**, 把 41-49 章 (认证 / Security / Web 安全 / Redis / MQ / 文件上传) 全部整合到博客 API。
 
-- 优先级：L1 必须掌握
-- 预计投入：4小时
-- 阶段产出：交付简历级博客 API v2
+- v1 (Ch40): 只有 CRUD + 基础参数校验
+- **v2 (本章)**: 认证 + 权限 + 缓存 + 安全 + 文件上传 + 异步任务
 
-## 二、核心概念
+输出: 一个 **简历级的博客 API 项目**, 不是玩具 demo。
 
-### 1. 整合交付
+- 优先级: L1 必须完成
+- 投入: 8 小时 (整合 + 联调 + 文档)
+- 产出: 可在简历里写 "独立交付完整 Spring Boot 博客后端"
 
-理解 整合交付 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
+## 二、整合的能力清单
 
-### 2. 验收标准
-
-理解 验收标准 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
-
-### 3. README
-
-理解 README 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
-
-### 4. 测试
-
-理解 测试 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
-
-### 5. 复盘
-
-理解 复盘 时要同时关注三个问题：它解决什么项目问题、代码里如何落地、面试时如何讲清楚取舍。
-
-## 三、工作原理
-
-| 维度 | 要点 | 你需要能说清 |
+| 来源 | 能力 | v2 落地位置 |
 |---|---|---|
-| 入口 | 本章技术从哪里被触发 | 请求、命令、测试、容器启动或任务提交的入口 |
-| 配置 | 哪些参数会影响行为 | 配置文件、注解、依赖版本、运行环境 |
-| 执行 | 核心流程如何流转 | 调用链、对象生命周期、资源释放、异常传播 |
-| 边界 | 什么情况下会失败 | 空值、并发、事务、网络、权限、数据不一致 |
-| 验证 | 如何证明实现正确 | 单元测试、集成测试、日志、SQL、接口返回 |
+| Ch41 | 注册登录 | `/auth/register` `/auth/login` |
+| Ch42 | JWT | 全局 JwtAuthenticationFilter |
+| Ch43 | RBAC | `@PreAuthorize` 注解 |
+| Ch44 | Spring Security 6 | SecurityConfig |
+| Ch45 | Web 安全 | 安全响应头 / Jsoup 净化 / 限流 |
+| Ch46 | Redis 缓存 | 文章详情 Cache-Aside |
+| Ch46 | Redis ZSET | 热文章排行榜 |
+| Ch47 | Redisson | 评论点赞防并发 |
+| Ch47 | 多级缓存 | 文章详情 Caffeine+Redis |
+| Ch48 | RabbitMQ | 评论通知 / 异步统计 |
+| Ch49 | 文件上传 | 头像 + 文章插图 + MinIO |
 
-## 四、项目使用场景
+## 三、v2 系统架构
 
-在博客后端项目中，本章能力会服务于以下场景：
+```
+                     ┌──── nginx ────┐
+                     │ TLS / 限流 / CDN│
+                     └────┬──────────┘
+                          │
+                   ┌──────▼──────┐
+                   │ Spring Boot │
+   ┌──────────┐    │   API       │   ┌────────┐
+   │ JWT 过滤 ├───►│  + Security ├──►│ MySQL  │
+   └──────────┘    │  + 限流     │   └────────┘
+                   │  + 缓存     │   ┌────────┐
+                   │  + MQ 发送  ├──►│ Redis  │
+                   └──────┬──────┘   └────────┘
+                          │          ┌────────┐
+                          ├─────────►│RabbitMQ│
+                          │          └───┬────┘
+                          │          ┌───▼────┐
+                          │          │Consumer│ (邮件/统计)
+                          │          └────────┘
+                          │          ┌────────┐
+                          └─────────►│ MinIO  │ (头像/图片)
+                                     └────────┘
+```
 
-- 完成“交付简历级博客 API v2”，形成可运行、可演示、可复盘的阶段成果。
-- 把学习内容落到 Controller、Service、Repository、配置、测试或部署脚本等真实位置。
-- 为后续里程碑积累可复用代码，而不是只写一次性 Demo。
-- 准备面试表达：能从业务需求讲到技术选择，再讲到失败场景和改进方案。
+## 四、模块拆分
 
-## 五、常见问题与坑
+```
+backend/
+├── auth/         (Ch41-43) AuthController / JwtService / UserDetailsService
+├── post/         (Ch40) PostController / PostService / PostMapper
+├── comment/      新增 CommentController / CommentService
+├── upload/       (Ch49) UploadController / StorageService
+├── cache/        (Ch46-47) CacheConfig / PostCacheService
+├── security/     (Ch44-45) SecurityConfig / RateLimitFilter / Sanitizer
+├── mq/           (Ch48) RabbitConfig / NotifyConsumer
+├── common/       Result / GlobalExceptionHandler / BizException
+└── config/       OpenAPI / Jackson / WebMvc
+```
 
-| 问题 | 后果 | 处理方式 |
+## 五、对外接口清单
+
+| Endpoint | 描述 | 权限 |
 |---|---|---|
-| 只会照抄配置，不理解默认值 | 环境一变就排查困难 | 每个配置写清默认值、覆盖方式和验证命令 |
-| 业务代码和技术细节混在一起 | 后续难测试、难维护 | 保持 Controller/Service/Repository 或任务边界清晰 |
-| 忽略异常和边界条件 | Demo 能跑，项目不稳 | 对空数据、非法参数、资源失败、重复请求做验证 |
-| 没有测试或日志 | 出错只能猜 | 给核心路径加测试，用日志记录关键输入和结果 |
+| POST /auth/register | 注册 | 公开 |
+| POST /auth/login | 登录返回 JWT | 公开 |
+| POST /upload/avatar | 头像上传 | 登录 |
+| POST /upload/image | 文章插图 | 登录 |
+| GET /posts | 文章列表 (分页, 缓存) | 公开 |
+| GET /posts/{id} | 文章详情 (多级缓存) | 公开 |
+| POST /posts | 发布 | 登录 + Jsoup 净化 |
+| PUT /posts/{id} | 编辑 | 作者本人 / ADMIN |
+| DELETE /posts/{id} | 删除 | 作者本人 / ADMIN |
+| POST /posts/{id}/comments | 评论 | 登录, 异步通知 |
+| GET /posts/hot | 热门排行 | 公开 (ZSET) |
+| GET /actuator/health | 健康检查 | 公开 |
 
-## 六、面试高频问题
+## 六、关键非功能要求
 
-1. 里程碑：博客APIv2 解决了 Java 后端项目里的什么问题？
-2. 如果本章能力在生产环境出问题，你会从哪些日志、配置或数据开始排查？
-3. 本章技术和前后章节的关系是什么？例如它如何服务于博客 API 项目？
-4. 你在实现“交付简历级博客 API v2”时会如何划分模块，为什么？
-5. 有哪些看似能跑但不适合真实项目的写法？
+| 维度 | 标准 |
+|---|---|
+| 安全 | 所有写接口必须认证; 富文本 Jsoup 净化; 全局响应头 (CSP/HSTS/X-Frame); 登录限流 5/min |
+| 性能 | 文章详情 P99 < 50ms (缓存命中); 列表 P99 < 200ms |
+| 可观测 | 日志结构化 (JSON), TraceId 贯穿; Prometheus 暴露 /actuator/prometheus |
+| 可用性 | Redis 宕机降级到 DB; MQ 宕机 outbox 兜底 |
+| 测试 | 集成测试覆盖核心路径; ≥ 30 个测试 |
+| 文档 | OpenAPI (Swagger) + README + 部署文档 |
+
+## 七、常见坑 (整合期)
+
+| 坑 | 后果 | 处理 |
+|---|---|---|
+| Security 配置吃掉 OPTIONS 预检 | 前端 CORS 失败 | 显式 `cors().and()` + WebMvc CORS |
+| @PreAuthorize 没生效 | 任何人可调管理接口 | `@EnableMethodSecurity` 没加 |
+| 缓存和事务顺序 | 事务未提交先清缓存, 别人又读 | 改成 `@TransactionalEventListener(AFTER_COMMIT)` |
+| MQ 消费方启动慢于生产方 | 消息丢失 | 队列必须持久化 + 用 outbox |
+| 上传文件后, 缓存里仍是旧 URL | 用户改头像不生效 | 用户表更新时 evict 用户缓存 |
+| 多 Module 循环依赖 | 启动失败 | 限制依赖方向: controller → service → mapper, 跨模块通过 event |
+
+## 八、面试讲法 (3 分钟)
+
+"我做了一个 Spring Boot 博客后端, 完整集成:
+- 认证用 JWT + Spring Security 6, RBAC 用 @PreAuthorize
+- Web 安全做了 XSS (Jsoup)、CSRF (无状态 JWT 不需要)、SQL (MyBatis #{}) 三类防护, 加全局安全响应头和 Bucket4j 限流
+- 文章详情走 Caffeine + Redis 二级缓存, P99 50ms; 热门用 Redis ZSET
+- 评论通知用 RabbitMQ 异步, outbox 表保证最终一致
+- 头像/插图上传走 MinIO, Tika 校验真实类型, sha 命名去重
+- 全链路日志 + Prometheus + Docker Compose 一键起
+代码 30+ 个集成测试, P99 / 错误率 / QPS 都跑过基准。"
+
+## 九、自检表
+
+- [ ] 41-49 章每章的核心能力都落到了博客项目
+- [ ] 没有死循环依赖, 模块清晰
+- [ ] 安全清单 (Ch45) 全过
+- [ ] 缓存 / MQ / 上传 都有失败降级
+- [ ] README 有架构图 + 启动命令 + 接口列表 + 关键设计决策
+- [ ] 简历可写一句话技术亮点

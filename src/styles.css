@@ -107,7 +107,7 @@ button:disabled {
 
 .nav {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -125,6 +125,7 @@ button:disabled {
 }
 
 .nav button {
+  padding: 0 8px;
   color: #d6ded9;
   background: rgba(255, 255, 255, 0.08);
 }
@@ -413,6 +414,103 @@ button:disabled {
   font-size: 17px;
 }
 
+.coach-hero {
+  min-height: 180px;
+}
+
+.coach-score {
+  display: grid;
+  place-items: center;
+  width: 118px;
+  height: 118px;
+  border-radius: 8px;
+  background: #17211f;
+  color: #f5f1e8;
+}
+
+.coach-score strong {
+  font-size: 38px;
+  line-height: 1;
+}
+
+.coach-score span {
+  color: #d6ded9;
+}
+
+.coach-grid {
+  margin-top: 18px;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-height: 34px;
+  padding: 7px 0;
+  color: #40514a;
+  border-bottom: 1px solid #eef1ed;
+}
+
+.check-row svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: #2e7c73;
+}
+
+.helper-text,
+.empty-text {
+  margin: 0 0 12px;
+  color: #6c7773;
+  line-height: 1.6;
+}
+
+.panel textarea,
+.card-item textarea {
+  width: 100%;
+  min-height: 112px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d7ded8;
+  border-radius: 8px;
+  outline: 0;
+  resize: vertical;
+  background: #fbfcfb;
+}
+
+.card-item details {
+  margin-top: 12px;
+  color: #40514a;
+}
+
+.card-item summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 12px;
+}
+
+.evidence-item {
+  padding: 14px;
+  border: 1px solid #e0e5de;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.evidence-item span {
+  color: #2e7c73;
+  font-weight: 700;
+}
+
+.evidence-item p {
+  margin: 8px 0 0;
+  color: #40514a;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 .stage-row {
   display: grid;
   grid-template-columns: 150px 1fr 58px;
@@ -484,6 +582,12 @@ button:disabled {
   font-size: 28px;
 }
 
+.reader-actions {
+  display: grid;
+  justify-items: end;
+  gap: 12px;
+}
+
 .chapter-meta {
   display: flex;
   align-items: flex-start;
@@ -515,6 +619,25 @@ button:disabled {
 .priority.l3 {
   background: #e8effb;
   color: #2f5f9c;
+}
+
+.print-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #17312d;
+  background: #f2c15b;
+}
+
+.print-button:hover {
+  background: #e7b13d;
+}
+
+.print-sheet {
+  display: none;
 }
 
 .layer-tabs {
@@ -770,7 +893,7 @@ button:disabled {
   }
 
   .nav {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .nav button {
@@ -877,6 +1000,11 @@ button:disabled {
   .reader-header {
     display: block;
     padding: 20px;
+  }
+
+  .reader-actions {
+    justify-items: start;
+    margin-top: 12px;
   }
 
   .reader-header h2 {
@@ -1030,4 +1158,370 @@ button:disabled {
   .button-row {
     grid-template-columns: 1fr;
   }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 18mm 14mm 17mm;
+
+    @top-left {
+      content: "Java 60 天自测卷";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #555;
+    }
+
+    @top-center {
+      content: "第 " counter(page) " 页";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  @page cover {
+    @top-right {
+      content: "章节自测";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #555;
+    }
+  }
+
+  @page theory {
+    @top-right {
+      content: "模块：理论";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  @page demo {
+    @top-right {
+      content: "模块：Demo";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  @page check {
+    @top-right {
+      content: "模块：自测";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  @page project {
+    @top-right {
+      content: "模块：项目任务";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  @page answers {
+    @top-right {
+      content: "模块：自测参考答案";
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      font-size: 9pt;
+      color: #111;
+    }
+  }
+
+  :root,
+  body {
+    color: #111;
+    background: #fff;
+  }
+
+  body {
+    min-height: 0;
+  }
+
+  .app-shell {
+    display: block;
+    min-height: 0;
+  }
+
+  .sidebar,
+  .toast,
+  .workspace > :not(.print-sheet) {
+    display: none !important;
+  }
+
+  .workspace {
+    display: block;
+    padding: 0;
+  }
+
+  .print-sheet {
+    display: block;
+    max-width: none;
+    color: #111;
+    background: #fff;
+    font-family: "Times New Roman", "Noto Serif CJK SC", serif;
+    font-size: 11pt;
+    line-height: 1.58;
+  }
+
+  .print-header {
+    page: cover;
+    padding-bottom: 10mm;
+    border-bottom: 1px solid #222;
+    break-after: avoid;
+  }
+
+  .print-header .eyebrow {
+    color: #444;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 10pt;
+    letter-spacing: 0;
+  }
+
+  .print-header h1 {
+    margin: 4mm 0 2mm;
+    font-size: 24pt;
+    line-height: 1.2;
+  }
+
+  .print-header p {
+    margin: 0;
+    color: #333;
+  }
+
+  .print-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6mm;
+    margin-top: 4mm;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 9.5pt;
+  }
+
+  .print-order {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 2mm;
+    margin: 8mm 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: print-order;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 9.5pt;
+  }
+
+  .print-order li {
+    min-height: 12mm;
+    padding: 2mm;
+    border: 1px solid #999;
+    counter-increment: print-order;
+    break-inside: avoid;
+  }
+
+  .print-order li::before {
+    content: counter(print-order) ". ";
+    font-weight: 700;
+  }
+
+  .print-section {
+    margin-top: 0;
+    break-before: auto;
+    break-inside: auto;
+  }
+
+  .print-theory {
+    page: theory;
+  }
+
+  .print-demo {
+    page: demo;
+  }
+
+  .print-check {
+    page: check;
+  }
+
+  .print-project {
+    page: project;
+  }
+
+  .print-module-tag {
+    display: inline-block;
+    margin-bottom: 3mm;
+    padding: 1mm 2.5mm;
+    border: 1px solid #777;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 9.5pt;
+    color: #111;
+    break-after: avoid;
+  }
+
+  .print-section h2 {
+    margin: 0 0 4mm;
+    padding-bottom: 2mm;
+    border-bottom: 1px solid #999;
+    font-size: 17pt;
+    break-after: avoid;
+  }
+
+  .print-section h1,
+  .print-section h3,
+  .print-section h4 {
+    break-after: avoid;
+  }
+
+  .print-section p,
+  .print-section li {
+    orphans: 3;
+    widows: 3;
+  }
+
+  .print-section pre,
+  .print-section blockquote,
+  .print-section table {
+    break-inside: avoid;
+  }
+
+  .print-section code {
+    padding: 0 2px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    background: #f4f4f4;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 9.5pt;
+  }
+
+  .print-section pre {
+    overflow: visible;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 4mm;
+    border: 1px solid #999;
+    background: #f7f7f7;
+  }
+
+  .print-section pre code {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .print-section table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+  }
+
+  .print-section th,
+  .print-section td {
+    padding: 2mm;
+    border: 1px solid #777;
+    vertical-align: top;
+  }
+
+  .print-note-space {
+    min-height: 34mm;
+    margin-top: 7mm;
+    padding-top: 3mm;
+    border-top: 1px dashed #777;
+    color: #555;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 10pt;
+    break-inside: avoid;
+  }
+
+  .print-intro {
+    margin-bottom: 6mm;
+    padding: 3mm 4mm;
+    border: 1px solid #aaa;
+    background: #fafafa;
+    color: #333;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 10pt;
+    break-inside: avoid;
+  }
+
+  .print-intro p {
+    margin: 0;
+  }
+
+  .print-question {
+    margin: 0 0 8mm;
+    padding: 4mm 0 0;
+    border-top: 1px solid #bbb;
+    break-inside: avoid;
+  }
+
+  .print-question:first-of-type {
+    border-top: 0;
+  }
+
+  .print-question-index {
+    display: inline-block;
+    margin-bottom: 2mm;
+    padding: 1mm 2.5mm;
+    border: 1px solid #111;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 9.5pt;
+    font-weight: 700;
+    color: #111;
+    break-after: avoid;
+  }
+
+  .print-answer-space {
+    min-height: 38mm;
+    margin-top: 5mm;
+    padding: 3mm;
+    border: 1px dashed #777;
+    color: #555;
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 10pt;
+    break-inside: avoid;
+  }
+
+  .print-answers {
+    page: answers;
+    break-before: page;
+  }
+
+  .print-answers .print-module-tag {
+    margin-bottom: 5mm;
+  }
+}
+
+.interview-question-row {
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  border: 1px solid #e0e5de;
+  background: #fbfcfa;
+}
+
+.interview-question-row.selected {
+  border-color: #2e7c73;
+  background: #eef7f4;
+}
+
+.interview-question-row.mastered {
+  background: #f0f7ec;
+}
+
+.interview-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.interview-tags span,
+.interview-tags .priority {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
 }

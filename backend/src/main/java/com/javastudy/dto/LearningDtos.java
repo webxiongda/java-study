@@ -67,6 +67,45 @@ public final class LearningDtos {
     ) {
     }
 
+    public record TodayDto(
+        String focus,
+        ChapterMeta currentChapter,
+        List<ReviewTaskDto> dueReviews,
+        List<ReviewCardDto> dueCards,
+        List<String> blocks,
+        List<String> acceptance
+    ) {
+    }
+
+    public record ReviewCardDto(
+        long id,
+        int chapterNo,
+        String chapterTitle,
+        String type,
+        String prompt,
+        String expected,
+        String dueDate,
+        String status
+    ) {
+    }
+
+    public record PortfolioDto(
+        int totalEvidence,
+        List<String> milestones,
+        List<PortfolioEvidenceDto> evidence
+    ) {
+    }
+
+    public record PortfolioEvidenceDto(
+        long id,
+        int chapterNo,
+        String milestone,
+        String evidenceType,
+        String body,
+        String createdAt
+    ) {
+    }
+
     public record ProgressRequest(int chapterNo, String layer, boolean done) {
     }
 
@@ -91,5 +130,14 @@ public final class LearningDtos {
     }
 
     public record CheckRevealRequest(int chapterNo, String chapterTitle) {
+    }
+
+    public record ValidationRequest(int chapterNo, String layer, String summary, String evidence) {
+    }
+
+    public record CardAnswerRequest(String answer, boolean remembered) {
+    }
+
+    public record PortfolioEvidenceRequest(int chapterNo, String milestone, String evidenceType, String body) {
     }
 }

@@ -2,52 +2,224 @@
 
 ## Demo 目标
 
-完成一个围绕 **输出性能优化报告** 的最小可运行练习。Demo 不追求功能多，而是要求能运行、能解释、能扩展。
+把一个慢接口 (`GET /api/v1/posts/{id}/detail`, 返回文章 + 作者 + 前 20 评论) 从 P99 600ms 优化到 P99 30ms。 全程压测数据驱动。
 
-## 前置条件
+## 初始版本 (慢)
 
-- JDK 21 可用，能执行 java -version。
-- 项目已用 Git 管理，每次练习前确认工作区状态。
-- 使用 IntelliJ IDEA 或 VS Code，代码统一 UTF-8。
-- 准备 MySQL 或 Docker MySQL；没有数据库时先写 SQL 文件和伪实现。
-- 准备 Spring Boot 项目骨架，包名建议使用 com.example.blog。
+```java
+@GetMapping("/{id}/detail")
+public PostDetail detail(@PathVariable Long id) {
+    Post post = postRepo.findById(id).orElseThrow();
+    User author = userRepo.findById(post.getAuthorId()).orElseThrow();
+    List<Comment> comments = commentRepo.findByPostId(id);    // 没分页
+    List<CommentVO> commentVos = comments.stream()
+        .map(c -> {
+            User cu = userRepo.findById(c.getUserId()).orElseThrow();  // N+1!
+            return new CommentVO(c, cu);
+        }).toList();
+    return new PostDetail(post, author, commentVos);
+}
+```
 
-## 实操步骤
+## Step 1: 基线压测
 
-1. 创建本章练习分支或目录，名称包含 chapter-58。
-2. 根据“SQL 索引、慢查询、接口压测、日志排查”列出 3 个必须验证的行为。
-3. 先写最小代码让主流程跑通，再补充异常、边界和日志。
-4. 把运行命令、输入样例、输出结果写进本章笔记。
-5. 最后用一句话总结：性能优化 在博客项目中承担什么责任。
+```bash
+wrk -t4 -c100 -d30s --latency http://localhost:8080/api/v1/posts/1/detail
+```
 
-## 示例代码
+输出 (典型):
+```
+Latency Distribution
+   50%  234.56ms
+   90%  489.23ms
+   99%  612.45ms
+Requests/sec:  142.34
+```
 
-~~~yaml
-services:
-  app:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      SPRING_PROFILES_ACTIVE: prod
-  mysql:
-    image: mysql:8.4
-  redis:
-    image: redis:7
-~~~
+**结论**: P99 612ms, QPS 142 — 慢。
 
-## 运行与验证
+## Step 2: 看慢日志 + EXPLAIN
 
-| 检查项 | 验证方式 |
-|---|---|
-| 主流程可运行 | 使用命令行、JUnit、HTTP 请求或 SQL 客户端执行一次完整流程 |
-| 错误场景可观察 | 故意传入非法参数或断开依赖，确认异常信息可理解 |
-| 输出可复现 | README 中记录命令、请求、响应或控制台输出 |
-| 代码可维护 | 类名、方法名、包结构能表达职责，没有把所有逻辑塞进一个方法 |
+```bash
+tail -f /var/log/mysql/slow.log
+```
 
-## 建议提交信息
+发现:
+```sql
+# Query_time: 0.054
+SELECT * FROM comments WHERE post_id = 1;    -- 没索引!
+# Query_time: 0.012
+SELECT * FROM users WHERE id = 5;            -- 重复 N 次
+```
 
-~~~bash
-git add .
-git commit -m "chapter 58: 性能优化 demo"
-~~~
+```sql
+EXPLAIN SELECT * FROM comments WHERE post_id = 1;
+-- type: ALL, rows: 50000, key: NULL    ← 全表扫!
+```
+
+## Step 3: 优化 1 - 加索引 (DB)
+
+```sql
+ALTER TABLE comments ADD INDEX idx_post_id_created (post_id, created_at);
+```
+
+EXPLAIN 后: `type: ref, rows: 200`. 单条评论查询 50ms → 1ms。
+
+重压: P99 612ms → 280ms。
+
+## Step 4: 优化 2 - 解决 N+1 (一次取所有 user)
+
+```java
+public PostDetail detail(Long id) {
+    Post post = postRepo.findById(id).orElseThrow();
+    User author = userRepo.findById(post.getAuthorId()).orElseThrow();
+
+    // 改为分页 + 一次取所有 user
+    List<Comment> comments = commentRepo
+        .findByPostIdOrderByCreatedAtDesc(id, PageRequest.of(0, 20))
+        .getContent();
+    Set<Long> userIds = comments.stream()
+        .map(Comment::getUserId).collect(toSet());
+    Map<Long, User> userMap = userRepo.findAllById(userIds).stream()
+        .collect(toMap(User::getId, u -> u));
+    List<CommentVO> commentVos = comments.stream()
+        .map(c -> new CommentVO(c, userMap.get(c.getUserId())))
+        .toList();
+
+    return new PostDetail(post, author, commentVos);
+}
+```
+
+重压: P99 280ms → 80ms。
+
+## Step 5: 优化 3 - Redis 缓存 (热数据)
+
+```java
+@Cacheable(cacheNames="post:detail", key="#id")
+public PostDetail detail(Long id) {
+    // 同上
+}
+```
+
+application.yml:
+```yaml
+spring:
+  cache:
+    type: redis
+    redis:
+      time-to-live: 5m
+```
+
+第二次访问命中缓存, RT 从 80ms → 3ms。 冷启动还是 80ms。
+
+重压 (warm up 后): P99 80ms → 12ms, QPS 142 → 5000+。
+
+## Step 6: 优化 4 - 本地缓存 (避免 Redis 网络往返)
+
+```java
+@Configuration
+public class CacheConfig {
+    @Bean
+    public CacheManager cacheManager() {
+        return new CaffeineCacheManager(...) // L1 Caffeine
+            // L2 Redis
+    }
+}
+```
+
+P99 12ms → 4ms。
+
+## Step 7: 优化 5 - 并行化非依赖项
+
+```java
+public PostDetail detail(Long id) {
+    CompletableFuture<Post> postF = supplyAsync(() -> postRepo.findById(id).orElseThrow(), pool);
+    CompletableFuture<List<Comment>> commentsF = supplyAsync(
+        () -> commentRepo.findByPostIdOrderByCreatedAtDesc(id, PageRequest.of(0,20)).getContent(),
+        pool);
+
+    Post post = postF.join();
+    User author = userRepo.findById(post.getAuthorId()).orElseThrow();
+    List<Comment> comments = commentsF.join();
+    // ...
+}
+```
+
+冷启动 P99 80ms → 50ms (post 和 comments 并行)。
+
+## 优化报告 (最终)
+
+| 阶段 | P50 | P99 | QPS | 错误率 | 改动 |
+|---|---|---|---|---|---|
+| 基线 | 234ms | 612ms | 142 | 0% | - |
+| 加 comments 索引 | 124ms | 280ms | 320 | 0% | SQL |
+| 解决 N+1 | 35ms | 80ms | 1100 | 0% | 代码 |
+| Redis 缓存 | 4ms | 12ms | 5200 | 0% | 注解 |
+| Caffeine L1 | 1ms | 4ms | 8500 | 0% | 注解 |
+| 并行化 | 1ms | 3ms | 9200 | 0% | 代码 |
+
+**总收益**: P99 612ms → 3ms (200x), QPS 142 → 9200 (65x)。
+
+## Demo 2: JMH 微基准
+
+```java
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+@State(Scope.Benchmark)
+@Warmup(iterations = 3, time = 1)
+@Measurement(iterations = 5, time = 1)
+public class CollectionBench {
+
+    List<Integer> data = IntStream.range(0, 1000).boxed().toList();
+
+    @Benchmark public int forLoop() {
+        int sum = 0;
+        for (int i : data) sum += i;
+        return sum;
+    }
+
+    @Benchmark public int stream() {
+        return data.stream().mapToInt(Integer::intValue).sum();
+    }
+
+    @Benchmark public int parallelStream() {
+        return data.parallelStream().mapToInt(Integer::intValue).sum();
+    }
+}
+```
+
+跑: `mvn clean package && java -jar target/benchmarks.jar`
+
+预期输出:
+```
+forLoop          avgt   5  1234 ± 12 ns/op
+stream           avgt   5  4523 ± 45 ns/op       ← 慢 4x
+parallelStream   avgt   5  9821 ± 312 ns/op       ← 1000 元素并行反而更慢 (调度开销)
+```
+
+**结论**: 小集合用 for, 大集合 (> 10k) 才考虑 parallelStream。
+
+## Demo 3: JFR 找 CPU 热点
+
+```bash
+# 启动应用时
+java -XX:StartFlightRecording=duration=60s,filename=app.jfr -jar app.jar
+
+# 同时压测
+wrk -t4 -c100 -d60s http://localhost:8080/api/v1/posts/1
+
+# 用 JMC 打开 app.jfr
+open -a "JDK Mission Control" app.jfr
+```
+
+看 **CPU → Hot Methods**, 通常会发现:
+- Jackson 序列化 (考虑 afterburner)
+- BCrypt (考虑放业务异步)
+- 反射 (考虑 MethodHandle 缓存)
+
+## 提交
+
+```bash
+git add chapters/58-性能优化/
+git commit -m "ch58: detail API optimization 612ms→3ms"
+```

@@ -1,42 +1,222 @@
 # Chapter 51 并发基础 - 自测与验收
 
-## 一、概念自测
+## Q1 概念: 线程 6 状态各代表什么? 转换图能画出来吗?
 
-1. 并发基础 的核心目标是什么？请用不超过 3 句话解释。
-2. 本章的关键配置、关键类或关键 SQL 分别是什么？
-3. 如果“模拟多线程下载任务”运行失败，你会按什么顺序排查？
-4. 本章最容易被初学者忽略的边界条件是什么？
-5. 它和真实 Java 后端面试有什么关系？
+```
+        ┌────────┐
+        │  NEW   │
+        └───┬────┘
+            │ start()
+            ▼
+        ┌────────────┐  yield/系统调度    ┌────────────┐
+        │ RUNNABLE   │ ────────────────► │ RUNNABLE   │ (OS Ready)
+        └─┬──────┬─┬─┘                   └────────────┘
+          │      │ │
+synchronized失败 │ │ Object.wait() / LockSupport.park() / join() (无时限)
+          ▼      │ ▼
+    ┌─────────┐  │ ┌─────────┐
+    │ BLOCKED │  │ │ WAITING │
+    └────┬────┘  │ └────┬────┘
+         │       │      │ notify / notifyAll / unpark / join 结束
+         │       │      ▼
+         │       │ ┌──────────────┐
+         │       └►│TIMED_WAITING │ sleep(t) / wait(t)
+         │         └──────┬───────┘
+         │  拿到锁         │ 时间到
+         └────────────────┴──────► RUNNABLE
+                                      │ run() 结束
+                                      ▼
+                                ┌────────────┐
+                                │ TERMINATED │
+                                └────────────┘
+```
 
-## 二、代码/实操题
+**重点考点**:
+- `BLOCKED` 专指 synchronized 竞争失败
+- `ReentrantLock.lock()` 阻塞时是 `WAITING`, **不是 BLOCKED**
+- `sleep` 不释放锁, `wait` 释放锁
+- `interrupt` 只能唤醒 sleep/wait/join, 唤不醒 `synchronized` 等待 (BLOCKED 是不可中断的)
 
-1. 独立完成“模拟多线程下载任务”的最小版本，不能只复制示例代码。
-2. 补充至少 2 个异常或边界用例，并说明预期结果。
-3. 把核心逻辑拆成清晰的方法或类，避免一个方法超过 50 行。
-4. 记录一次失败排查过程：现象、猜测、验证、结论。
+---
 
-## 三、费曼输出题
+## Q2 概念: volatile 解决什么, 不解决什么? 为什么 i++ 不安全?
 
-请用自己的话输出一段 300-500 字说明，包含：
+**解决**:
+1. 可见性: 写立即刷主存, 读直接读主存 (绕过 CPU cache line)
+2. 有序性: 插入读/写内存屏障, 禁止指令重排越过 volatile 操作
 
-- 为什么后端项目需要掌握 并发基础。
-- 本章能力在博客项目中的落地点。
-- 你写的 Demo 如何证明自己真的理解了。
-- 如果面试官追问生产环境问题，你会怎么回答。
+**不解决**: **原子性**。 `i++` 等价:
+```
+1. int tmp = i;       // 读
+2. tmp = tmp + 1;     // 算
+3. i = tmp;           // 写
+```
+两个线程同时读到 5, 各自 +1 写回 6, 结果 6 而不是 7。
 
-## 四、参考答案要点
+**修复方式**:
+```java
+private final AtomicInteger i = new AtomicInteger();
+i.incrementAndGet();    // CAS 保证原子
+// 或
+private final LongAdder counter = new LongAdder();  // 高并发更优 (分段累加)
+```
 
-| 问题 | 答案方向 |
-|---|---|
-| 怎么判断掌握了本章？ | 能独立实现 Demo，能解释核心流程，能处理失败场景 |
-| 项目里如何落地？ | 把能力接到博客 API 的数据、接口、安全、缓存、测试或部署链路中 |
-| 面试怎么讲？ | 先讲业务问题，再讲技术机制，最后讲边界和取舍 |
-| 常见扣分点 | 只背概念、不知道配置位置、不会排查、没有测试意识 |
+**经典坑题**: 单例双检锁 (DCL) 为什么 `instance` 必须 volatile?
+```java
+private static volatile Singleton INSTANCE;
+public static Singleton get() {
+    if (INSTANCE == null) {
+        synchronized (Singleton.class) {
+            if (INSTANCE == null) INSTANCE = new Singleton();  // ← 非原子
+        }
+    }
+    return INSTANCE;
+}
+```
+`new Singleton()` 分 3 步: 分配内存 / 调构造 / 引用赋值。 如果发生 (1)→(3)→(2) 重排, 别的线程 `INSTANCE != null` 但对象未构造完, 拿到半成品。 volatile 禁止此重排。
 
-## 五、通过标准
+---
 
-- [ ] 能从零复现本章 Demo。
-- [ ] 能讲清 Thread、Runnable、Callable、线程状态、join 中至少 3 个关键词。
-- [ ] 能回答本章 5 个概念自测题。
-- [ ] 能把本章内容和博客项目连接起来。
-- [ ] 已把易错点记录到 mistakes.md 或个人笔记。
+## Q3 代码审查: 找出错误并修复
+
+```java
+public class Worker {
+    private boolean stop = false;
+
+    public void run() {
+        new Thread(() -> {
+            while (!stop) {
+                try {
+                    Thread.sleep(1000);
+                    fetch();
+                } catch (InterruptedException e) {
+                    // ignored
+                }
+            }
+        }).run();
+    }
+
+    public void stop() { stop = true; }
+}
+```
+
+**问题清单**:
+
+1. `t.run()` → 在调用方线程同步执行, 应改 `.start()`
+2. `stop` 没 volatile → 子线程可能永远看不到 `true`
+3. `catch InterruptedException` 后 `// ignored` → 中断位被清除, 上层无法感知
+4. 没有保存线程引用 → 无法 `interrupt()` 优雅停止
+5. 调用 `stop` 方法时只改字段, 真正中断不了 sleep 中的线程
+6. 字段命名 `stop` 跟方法同名, 编译能过但有歧义
+7. 没有线程命名 → 出问题 jstack 看不出
+
+**修复**:
+
+```java
+public class Worker {
+    private volatile boolean running = true;
+    private Thread thread;
+
+    public synchronized void start() {
+        thread = new Thread(() -> {
+            while (running && !Thread.currentThread().isInterrupted()) {
+                try {
+                    fetch();
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            log.info("worker exited");
+        }, "data-fetcher");
+        thread.start();
+    }
+
+    public synchronized void stop() {
+        running = false;
+        if (thread != null) thread.interrupt();
+    }
+}
+```
+
+---
+
+## Q4 代码: 用 CompletableFuture 并发调三个外部接口, 任一失败立即返回
+
+```java
+public class ParallelFetch {
+    private final ExecutorService pool = Executors.newFixedThreadPool(8);
+
+    public Result fetchAll(String userId) {
+        CompletableFuture<UserVO> u = CompletableFuture.supplyAsync(() -> userApi.get(userId), pool);
+        CompletableFuture<OrderVO> o = CompletableFuture.supplyAsync(() -> orderApi.list(userId), pool);
+        CompletableFuture<CartVO> c = CompletableFuture.supplyAsync(() -> cartApi.get(userId), pool);
+
+        try {
+            CompletableFuture.allOf(u, o, c).get(2, TimeUnit.SECONDS);
+            return new Result(u.join(), o.join(), c.join());
+        } catch (TimeoutException e) {
+            u.cancel(true); o.cancel(true); c.cancel(true);
+            throw new BizException(504, "downstream timeout");
+        } catch (Exception e) {
+            throw new BizException(502, "downstream error: " + e.getCause().getMessage());
+        }
+    }
+}
+```
+
+**关键点**:
+- 用独立 pool, 不要共享 ForkJoinPool.commonPool (CPU 密集会饿死)
+- `allOf().get(timeout)` 而不是单个 future.get, 否则总耗时 = 最长 + 中间等待
+- 超时后 `cancel(true)` 释放下游 (但 supplyAsync 任务可能仍在跑, cancel 只是不再收结果)
+- 异常用 `BizException` 统一包装
+- pool 大小用 IO 密集公式: 核数 * (1 + 等待/计算)
+
+---
+
+## Q5 综合: 排查 "CPU 100%, 接口超时" 的步骤
+
+**线上故障 5 步法**:
+
+```bash
+# 1. 找出 CPU 高的进程
+top -c
+# 假设 java pid=12345
+
+# 2. 找出该 java 进程里 CPU 高的线程
+top -H -p 12345
+# 找出几个 CPU 90%+ 的线程 pid (linux 是 LWP)
+
+# 3. 把线程 pid 转 16 进制
+printf "%x\n" 23456    # 例如 5ba0
+
+# 4. dump 全部线程栈
+jstack 12345 > stack.txt
+
+# 5. 在 stack.txt 里搜 nid=0x5ba0
+grep -A 30 "nid=0x5ba0" stack.txt
+```
+
+**常见根因**:
+
+| 现象 | 根因 | 解法 |
+|---|---|---|
+| 多个线程 RUNNABLE 在某循环 | 死循环 / busy wait | 加 sleep / 用 BlockingQueue |
+| 多个线程 BLOCKED 同一锁 | 锁粒度太大 | 缩小临界区 / 分段锁 |
+| 多个线程 WAITING ConditionObject | 死锁 (jstack 末尾会标 Found Deadlock) | 调整加锁顺序 |
+| GC 线程 100% | 内存泄漏 / Full GC | 看 gc.log, 堆 dump 分析 |
+| ParallelGC 全部 RUNNABLE | 进入 STW | 扩容堆 / 换 G1/ZGC |
+
+**面试讲法 (2 分钟)**:
+> "我会先 top 看 CPU 进程, 再 top -H 看到底是 java 哪个线程吃 CPU, 然后把线程 ID 转 16 进制, jstack 出来 grep nid 找到对应栈。 常见根因要么是死循环 / busy wait, 要么是大锁导致大量 BLOCKED, 要么是 GC 风暴。 看到栈后能定位具体代码行, 再针对性改: 死循环改 BlockingQueue, 大锁拆细, GC 换 G1。"
+
+---
+
+## 通过标准
+
+- [ ] 能画线程 6 状态转换图, 区分 BLOCKED / WAITING
+- [ ] 能讲清 volatile 三件事 (可见性、有序性、不解决原子性)
+- [ ] 能识别上面 Worker 类 7 个问题
+- [ ] 能写 CompletableFuture 并发调用 + 超时取消
+- [ ] 能讲完整 CPU 100% 排查流程, 在白纸上写命令
