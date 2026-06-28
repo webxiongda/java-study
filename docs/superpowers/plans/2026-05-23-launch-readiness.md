@@ -16,11 +16,11 @@
 - Create: `backend/src/test/resources/application-test.yml`
 - Create: `backend/src/test/java/com/javastudy/LaunchReadinessIntegrationTest.java`
 
-- [ ] **Step 1: Add test profile configuration**
+- [x] **Step 1: Add test profile configuration**
 
 Create `backend/src/test/resources/application-test.yml` with H2, the repo content root, and a non-default JWT secret.
 
-- [ ] **Step 2: Write failing integration tests**
+- [x] **Step 2: Write failing integration tests**
 
 Create `LaunchReadinessIntegrationTest` covering:
 - `GET /api/health` returns 200 without auth.
@@ -29,7 +29,7 @@ Create `LaunchReadinessIntegrationTest` covering:
 - Authenticated `GET /api/summary` returns total progress data.
 - Authenticated `GET /api/chapters/1` returns chapter content.
 
-- [ ] **Step 3: Run test to verify failure**
+- [x] **Step 3: Run test to verify failure**
 
 Run: `mvn -f backend/pom.xml -Dtest=LaunchReadinessIntegrationTest test`
 
@@ -43,23 +43,23 @@ Expected before implementation: health endpoint assertion fails because `/api/he
 - Modify: `backend/src/main/java/com/javastudy/security/JwtService.java`
 - Modify: `backend/src/main/resources/application.yml`
 
-- [ ] **Step 1: Add `HealthController`**
+- [x] **Step 1: Add `HealthController`**
 
 Expose `GET /api/health` returning `{"status":"ok","service":"java-study-backend"}`.
 
-- [ ] **Step 2: Permit health endpoint**
+- [x] **Step 2: Permit health endpoint**
 
 Allow `/api/health` without authentication in the Spring Security filter chain.
 
-- [ ] **Step 3: Make CORS configurable**
+- [x] **Step 3: Make CORS configurable**
 
 Read `app.cors-allowed-origins`, default it to `*` for local compatibility, and apply configured origins in `CorsConfigurationSource`.
 
-- [ ] **Step 4: Reject unsafe JWT config outside local/test**
+- [x] **Step 4: Reject unsafe JWT config outside local/test**
 
 In `JwtService`, reject the default development JWT secret or secrets shorter than 32 chars when active profiles do not include `local` or `test`.
 
-- [ ] **Step 5: Run integration tests**
+- [x] **Step 5: Run integration tests**
 
 Run: `mvn -f backend/pom.xml -Dtest=LaunchReadinessIntegrationTest test`
 
@@ -70,11 +70,11 @@ Expected after implementation: tests pass.
 **Files:**
 - Modify: `package.json`
 
-- [ ] **Step 1: Add `verify` script**
+- [x] **Step 1: Add `verify` script**
 
 Add `verify` that runs `npm run check && npm run build && mvn -f backend/pom.xml test`.
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 Run: `npm run verify`
 
@@ -85,22 +85,22 @@ Expected: frontend type check passes, frontend production build passes, backend 
 **Files:**
 - No repo file changes required.
 
-- [ ] **Step 1: Package project**
+- [x] **Step 1: Package project**
 
 Create a tarball excluding `node_modules`, `dist`, `.git`, `backend/target`, local data, and temporary files.
 
-- [ ] **Step 2: Upload and build on ECS**
+- [x] **Step 2: Upload and build on ECS**
 
 Upload to `/tmp/java-study-deploy.tar.gz`, extract to `/www/wwwroot/java-study`, run `npm install`, `npm run build`, and `mvn -f backend/pom.xml package -DskipTests`.
 
-- [ ] **Step 3: Configure backend runtime**
+- [x] **Step 3: Configure backend runtime**
 
 Run backend on `127.0.0.1:18080` with production MySQL settings and a non-default JWT secret.
 
-- [ ] **Step 4: Configure Nginx**
+- [x] **Step 4: Configure Nginx**
 
 Serve `/www/wwwroot/java-study/dist` on public port `8083` and proxy `/api/` to `http://127.0.0.1:18080`.
 
-- [ ] **Step 5: Verify deployment**
+- [x] **Step 5: Verify deployment**
 
 Run remote checks for `/`, `/api/health`, unauthenticated `/api/summary`, and browser-visible app shell.

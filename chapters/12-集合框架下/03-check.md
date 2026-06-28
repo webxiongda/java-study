@@ -1,375 +1,257 @@
-# Chapter 12 - 集合框架下：自测题
+# Chapter 12 集合框架下 - 自测与验收
 
-> 完成本节 demo 后，独立作答以下 5 道题，再对照答案检验掌握程度。
-
----
-
-## Q1（概念）：HashMap 的 put() 方法完整流程是什么？
-
-**题目：** 请描述调用 `map.put(key, value)` 时，HashMap 内部的完整执行流程（含 hash 计算、位置确定、碰撞处理、扩容等）。
+> 模板见 `docs/superpowers/specs/2026-05-25-check-template.md`
+> 覆盖率自检:`node scripts/check-coverage.mjs '^12-'`
 
 ---
 
-### 参考答案
+### Q1 [L2·概念·章节内测] HashMap 底层数据结构 + Java7 vs Java8 改了什么
 
-**完整流程（Java 8+）：**
+**考点**: HashMap 底层数据结构, 链表树化与反树化
+**参考答案**:
 
-1. **计算 hash 值**
-   ```
-   hash = key.hashCode() ^ (key.hashCode() >>> 16)
-   ```
-   将高 16 位异或到低 16 位，目的是减少 hash 碰撞（"扰动函数"）。如果 key 为 null，hash 值为 0，存入 index=0 的桶。
+**JDK 7**:
+- 数组 + 链表
+- **头插法**(并发 resize 时形成环 → `get()` 死循环 → CPU 100%)
 
-2. **确定数组下标**
-   ```
-   index = hash & (capacity - 1)
-   ```
-   capacity 始终是 2 的幂，所以等价于对 capacity 取模，但位运算更快。
+**JDK 8**:
+- 数组 + 链表 + **红黑树**
+- **尾插法**(解决了死循环,但仍线程不安全)
+- 树化条件:**链表长度 ≥ 8 且数组容量 ≥ 64**(只满足前者会先 resize 不会树化)
+- 反树化:树节点 ≤ 6 时退化回链表(在 resize 时检查)
 
-3. **判断桶是否为空**
-   - 若 `table[index] == null`，直接创建新 Node 存入。
+**为什么是 8?** 按泊松分布,一个桶里有 8 个元素的概率约 6×10⁻⁸,正常 hash 函数下几乎不会触发。**树化主要防恶意 DoS**(攻击者构造大量相同 hashCode 的 key,把 HashMap 退化成链表 O(n))。
 
-4. **桶不为空时处理碰撞**
-   - 先判断第一个节点的 key 是否相等（`hash 相等 && (key == 存入的key || key.equals(存入的key))`）：
-     - 若相等 → 更新 value，返回旧 value。
-   - 若第一个节点是 **TreeNode**（红黑树节点）→ 调用红黑树的插入方法。
-   - 否则遍历链表：
-     - 找到 key 相同的节点 → 更新 value。
-     - 到达链表末尾仍未找到 → 追加新节点到链表尾部。
-     - 追加后检查链表长度是否 `>= 8`，若是且数组长度 `>= 64` → 链表转红黑树（treeifyBin）。
-
-5. **插入后检查是否需要扩容**
-   - `++size > threshold`（threshold = capacity × loadFactor，默认 0.75）时触发 **resize()**。
-   - 扩容：新容量 = 旧容量 × 2，重新计算所有节点位置（rehash）。
-
-**关键数字记忆：**
-| 参数 | 默认值 |
-|------|--------|
-| 初始容量 | 16 |
-| 负载因子 | 0.75 |
-| 链表转树阈值 | 8（且数组长度>=64） |
-| 树退化链表阈值 | 6 |
+**🔥追问**: 红黑树 vs AVL 树为什么 HashMap 选红黑?(答:插入/删除旋转次数少,适合频繁修改;查询略慢但能接受)
+**关联**: interview-bank.md#hashmap-bottom-structure
 
 ---
 
-## Q2（概念）：equals() 和 hashCode() 为什么必须同时重写？
+### Q2 [L2·代码阅读·章节内测] 解释 HashMap.put 流程,扰动函数为什么用 `^ (h >>> 16)`
 
-**题目：** 解释为什么重写 `equals()` 时必须同时重写 `hashCode()`。如果只重写 `equals()` 不重写 `hashCode()` 会发生什么？
-
----
-
-### 参考答案
-
-**必须同时重写的根本原因：**
-
-Java 规范要求（Java SE 文档）：
-> 如果两个对象 `equals()` 返回 true，那么它们的 `hashCode()` 必须相同。
-
-HashMap / HashSet 的查找逻辑是：
-1. 先用 `hashCode()` 定位桶
-2. 再用 `equals()` 在桶内精确比较
-
-如果两个"逻辑相等"的对象 hashCode 不同，步骤 1 就会定位到不同的桶，`equals()` 根本不会被调用。
-
-**只重写 equals 不重写 hashCode 的后果：**
+**考点**: HashMap 的 put 流程, 扰动函数, 桶下标计算
+**参考答案**:
 
 ```java
-Person p1 = new Person("Alice", 30);
-Person p2 = new Person("Alice", 30);
-
-System.out.println(p1.equals(p2));  // true（重写了 equals）
-
-Map<Person, String> map = new HashMap<>();
-map.put(p1, "工程师");
-
-System.out.println(map.get(p2));    // null！！！
+// HashMap 源码(简化)
+static final int hash(Object key) {
+    int h;
+    return (key == null) ? 0 : (h = key.hashCode()) ^ (h >>> 16);
+}
 ```
 
-原因：
-- p1 和 p2 的 `hashCode()` 继承自 Object，返回的是内存地址相关的值，两者不同。
-- `map.get(p2)` 先计算 p2 的 hash，定位到不同的桶，永远找不到 p1 存入的值。
+**put(k, v) 完整流程**:
 
-**同样的问题出现在 HashSet：**
-```java
-Set<Person> set = new HashSet<>();
-set.add(p1);
-System.out.println(set.contains(p2));  // false！
-set.add(p2);  // 重复添加成功，set 中出现两个"相同"的对象
-```
+1. **计算 hash**:`hashCode() ^ (hashCode() >>> 16)` — 扰动
+2. **算桶下标**:`index = (n - 1) & hash` (n 必须 2 的幂,等价于 hash % n,但位运算更快)
+3. table 为空 → `resize()` 初始化为 16
+4. 桶为空 → 直接放新 Node
+5. 桶非空:
+   - key 相同(`hash 相等 && equals 为 true`) → **覆盖 value**
+   - 桶头是树节点 → **树插入**
+   - 是链表 → 遍历,找到则覆盖;否则 **尾插**;插入后链长 ≥ 8 且 cap ≥ 64 → `treeifyBin`
+6. `size++`,若 `size > threshold` → `resize()` 翻倍
 
-**结论：** equals 决定"谁相等"，hashCode 决定"去哪个桶找"，两者必须保持一致。
+**为什么扰动 `h ^ (h >>> 16)`?**
+
+`(n-1) & hash` 在 n 较小(如 16)时只取 hash 的低 4 位 — 高位完全不参与。`^ (h >>> 16)` 让高 16 位与低 16 位异或,**把高位的特征注入低位**,显著降低高位相同低位不同时的碰撞率。
+
+**为什么用 `^` 不用 `+`?** XOR 是无进位、可逆、均匀分布的;`+` 有进位会产生位级偏置。
+
+**🔥追问**:为什么负载因子默认 0.75?为什么初始容量是 16?
+
+**参考答案**:
+- 0.75 是泊松分布下空间/时间平衡的经验最优(< 0.75 浪费内存,> 0.75 碰撞激增)
+- 16 = 2⁴,满足"n 必须 2 的幂"的位运算优化前提;**已知数据量时**应指定 `new HashMap<>(expectedSize / 0.75 + 1)` 避免扩容
+
+**关联**: interview-bank.md#hashmap-bottom-structure
 
 ---
 
-## Q3（实操）：分析只重写 equals 未重写 hashCode 的问题
+### Q3 [L3·Debug·面试高频] 找出 HashCodeEqualsDemo 中 BadKey 的灾难,讲清 equals/hashCode 契约
 
-**题目：** 以下 `Person` 类只重写了 `equals()`，未重写 `hashCode()`。分析将两个"相同"Person 放入 HashMap 后会出现什么问题，并给出修复方案。
+**考点**: equals() 和 hashCode() 契约, HashCodeEqualsDemo, BadKey, GoodKey, PersonKey
+**参考答案**:
 
 ```java
-public class Person {
-    private String name;
-    private int age;
+// 02-demo.md 的 BadKey - 只重写 equals 不重写 hashCode
+class BadKey {
+    String name;
+    @Override public boolean equals(Object o) {
+        return o instanceof BadKey && ((BadKey) o).name.equals(this.name);
+    }
+    // 没重写 hashCode → 用 Object 默认的(基于对象内存地址)
+}
 
-    public Person(String name, int age) {
-        this.name = name;
-        this.age = age;
+Map<BadKey, String> map = new HashMap<>();
+map.put(new BadKey("alice"), "v1");
+System.out.println(map.get(new BadKey("alice")));  // null !!!
+```
+
+**问题根因(equals/hashCode 三契约)**:
+
+1. `a.equals(b) == true` ⇒ `a.hashCode() == b.hashCode()` (强制)
+2. `a.hashCode() == b.hashCode()` 不保证 equals 为 true (允许哈希碰撞)
+3. `a.hashCode() != b.hashCode()` ⇒ `a.equals(b) == false` (反契约)
+
+BadKey 违反契约 1 — 两个"alice"的 hashCode 来自地址,不同 → put 进桶 5, get 算到桶 12 → null。
+
+**两种错误模式后果**:
+- **只重 equals,不重 hashCode** → HashMap 找不到 key(本题)
+- **只重 hashCode,不重 equals** → 同一个桶,但被认作不同对象,HashSet 存两份"相等"对象
+
+**修复(GoodKey 写法)**:
+
+```java
+class GoodKey {
+    String name;
+    @Override public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof GoodKey g)) return false;  // JDK 16+ pattern matching
+        return name.equals(g.name);
+    }
+    @Override public int hashCode() {
+        return Objects.hash(name);  // 多字段:Objects.hash(f1, f2, ...)
+    }
+}
+```
+
+**生产实践**:
+- 用 IDE 自动生成 equals/hashCode,基于同一组字段
+- 或用 Lombok `@EqualsAndHashCode(of = {"id"})`
+- **key 必须用不可变对象** — 见 02-demo.md 的 PersonKey 反例(可变字段会让 hashCode 在 put 后改变,等于"丢失" key)
+
+**🔥追问**: 字符串的 hashCode 算法?为什么用 31?(答:`h = 31 * h + c[i]`,31 是奇素数 + JIT 可优化为 `(h << 5) - h`)
+
+**关联**: interview-bank.md#hashmap-bottom-structure
+
+---
+
+### Q4 [L2·对比·面试高频] HashMap vs Hashtable vs ConcurrentHashMap
+
+**考点**: HashMap 线程不安全, ConcurrentHashMap (JDK 8 实现)
+**参考答案**:
+
+| 维度 | HashMap | Hashtable | ConcurrentHashMap |
+|---|---|---|---|
+| 线程安全 | ❌ | ✅ 全表 synchronized | ✅ 桶级 CAS + synchronized |
+| null key/value | key 1 个,value 多个 | 都不允许 | 都不允许 |
+| 性能(并发) | 高(单线程) | 极低(锁整个) | 高(锁单桶) |
+| JDK 7 实现 | 数组+链表 | 数组+链表 + 全表锁 | **Segment 分段锁** |
+| JDK 8 实现 | + 红黑树 | 同 7 | 取消 Segment,**桶头 CAS + synchronized** |
+| 推荐 | 单线程 | 已过时,别用 | 多线程首选 |
+
+**HashMap 为什么线程不安全(JDK 8)**?
+
+```java
+// HashMap.putVal 简化 (非原子)
+if ((p = tab[i = (n - 1) & hash]) == null)
+    tab[i] = newNode(hash, key, value, null);  // 检查 + 创建 + 插入 三步
+```
+
+并发场景下两个线程同时 put 同一个桶,**后写者会覆盖前写者的 next 指针** → 数据丢失。
+
+**ConcurrentHashMap JDK 8 的精妙**:
+
+1. **首节点为空**:`Unsafe.compareAndSwapObject` 直接 CAS 写入(无锁)
+2. **首节点非空**:`synchronized(firstNode)` 锁桶头节点(锁粒度 = 单桶)
+3. **扩容**:多线程协助迁移(`ForwardingNode` 占位),不阻塞读
+4. **size 估算**:`baseCount` + `CounterCell[]` 分段统计(类似 LongAdder)
+
+**坑**:`if (!map.containsKey(k)) map.put(k, v);` 不是原子!必须用 `putIfAbsent` 或 `computeIfAbsent`。
+
+**🔥追问**: JDK 7 的 Segment 分段锁为什么 JDK 8 抛弃了?(答:Segment 是 ReentrantLock 重对象 + 锁的是一整段桶,粒度仍粗;桶级锁可以做到 N 个桶 N 把锁;此外 CAS 在首节点空时完全无锁)
+
+**关联**: interview-bank.md#hashmap-thread-unsafe, interview-bank.md#chm-jdk8
+
+---
+
+### Q5 [L3·场景设计·面试高频] 用 LinkedHashMap 实现 LRU 缓存,并讨论生产怎么改
+
+**考点**: LinkedHashMap (accessOrder), 缓存淘汰策略, ConcurrentHashMap 概念
+**参考答案**:
+
+**最小实现(20 行)**:
+
+```java
+public class LRUCache<K, V> extends LinkedHashMap<K, V> {
+    private final int capacity;
+
+    public LRUCache(int capacity) {
+        // 第 3 参数 true = accessOrder: 每次 get/put 把节点挪到尾部
+        super(capacity, 0.75f, true);
+        this.capacity = capacity;
     }
 
     @Override
-    public boolean equals(Object o) {
-        if (this == o) return true;
-        if (!(o instanceof Person)) return false;
-        Person p = (Person) o;
-        return age == p.age && Objects.equals(name, p.name);
-    }
-    // 没有重写 hashCode()
-}
-```
-
----
-
-### 参考答案
-
-**问题分析：**
-
-```java
-Person p1 = new Person("Alice", 30);
-Person p2 = new Person("Alice", 30);
-
-// 验证 equals
-System.out.println(p1.equals(p2));       // true ✓
-
-// 验证 hashCode
-System.out.println(p1.hashCode());       // 例如：366712642（JVM内存地址相关）
-System.out.println(p2.hashCode());       // 例如：1829164700（不同！）
-
-Map<Person, String> map = new HashMap<>();
-map.put(p1, "Alice的部门");
-
-// 问题 1：get 返回 null
-String dept = map.get(p2);
-System.out.println(dept);               // null（找不到！）
-
-// 问题 2：put 不去重
-map.put(p2, "另一个值");
-System.out.println(map.size());         // 2（应该是 1）
-
-// 问题 3：HashSet 无法去重
-Set<Person> set = new HashSet<>();
-set.add(p1);
-set.add(p2);
-System.out.println(set.size());         // 2（应该是 1）
-```
-
-**根本原因：** p1 和 p2 的 hashCode 不同 → 存入不同的桶 → get 时找错了桶。
-
-**修复方案：**
-
-```java
-@Override
-public int hashCode() {
-    // 方式1：用 Objects.hash()（推荐，简洁）
-    return Objects.hash(name, age);
-
-    // 方式2：手动计算（了解原理）
-    // int result = name != null ? name.hashCode() : 0;
-    // result = 31 * result + age;
-    // return result;
-}
-```
-
-修复后验证：
-```java
-Person p1 = new Person("Alice", 30);
-Person p2 = new Person("Alice", 30);
-
-System.out.println(p1.hashCode() == p2.hashCode());  // true ✓
-
-Map<Person, String> map = new HashMap<>();
-map.put(p1, "Alice的部门");
-System.out.println(map.get(p2));  // "Alice的部门" ✓
-
-Set<Person> set = new HashSet<>();
-set.add(p1);
-set.add(p2);
-System.out.println(set.size());  // 1 ✓
-```
-
-**IDE 生成提示：** IntelliJ IDEA 可通过 `Alt+Insert` → `equals() and hashCode()` 自动生成，实际项目中推荐使用。
-
----
-
-## Q4（实操）：用 Comparator 对 List<Employee> 排序
-
-**题目：** 有如下 `Employee` 类，请用 `Comparator` 实现：按薪资降序排序，薪资相同时按姓名升序排序。写出完整可运行的代码。
-
-```java
-public class Employee {
-    private String name;
-    private double salary;
-    // 构造方法、getter 省略
-}
-```
-
----
-
-### 参考答案
-
-```java
-import java.util.*;
-
-public class EmployeeSortDemo {
-
-    static class Employee {
-        private String name;
-        private double salary;
-
-        public Employee(String name, double salary) {
-            this.name = name;
-            this.salary = salary;
-        }
-
-        public String getName() { return name; }
-        public double getSalary() { return salary; }
-
-        @Override
-        public String toString() {
-            return name + "(" + salary + ")";
-        }
-    }
-
-    public static void main(String[] args) {
-        List<Employee> employees = new ArrayList<>(Arrays.asList(
-            new Employee("张三", 15000),
-            new Employee("李四", 20000),
-            new Employee("王五", 15000),
-            new Employee("赵六", 18000),
-            new Employee("陈七", 20000)
-        ));
-
-        // 方式1：Comparator.comparing 链式写法（推荐）
-        employees.sort(
-            Comparator.comparingDouble(Employee::getSalary).reversed()
-                      .thenComparing(Employee::getName)
-        );
-
-        System.out.println("排序结果：");
-        employees.forEach(System.out::println);
-        // 输出：
-        // 陈七(20000.0)
-        // 李四(20000.0)
-        // 赵六(18000.0)
-        // 王五(15000.0)
-        // 张三(15000.0)
-
-        // 方式2：匿名内部类（理解底层逻辑）
-        employees.sort(new Comparator<Employee>() {
-            @Override
-            public int compare(Employee e1, Employee e2) {
-                // 薪资降序：e2 - e1（注意正负含义）
-                int salaryCompare = Double.compare(e2.getSalary(), e1.getSalary());
-                if (salaryCompare != 0) {
-                    return salaryCompare;  // 薪资不同，按薪资排
-                }
-                // 薪资相同，按姓名升序：e1 - e2
-                return e1.getName().compareTo(e2.getName());
-            }
-        });
-
-        // 方式3：Lambda 简化
-        employees.sort((e1, e2) -> {
-            int salaryCompare = Double.compare(e2.getSalary(), e1.getSalary());
-            return salaryCompare != 0 ? salaryCompare
-                                      : e1.getName().compareTo(e2.getName());
-        });
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > capacity;  // 超容量自动剔最久未访问的
     }
 }
 ```
 
-**关键点解释：**
-- `reversed()` 将原来的升序变为降序。
-- `thenComparing()` 在前一个比较器结果为 0 时生效（即薪资相同时启用）。
-- `Double.compare(a, b)` 比直接相减更安全（避免精度问题导致返回值截断为 0）。
+**关键设计点**:
+- `LinkedHashMap` 在 HashMap 基础上用**双向链表**串起所有节点
+- `accessOrder = true` 时,`get/put` 都会把当前节点移到链表尾(O(1))
+- `removeEldestEntry` 是 put 后回调,返回 true 就移除链表头(最久未访问)
 
----
+**生产升级路径**:
 
-## Q5（项目应用）：单词频率统计功能设计
+| 需求 | 方案 |
+|---|---|
+| 线程安全 | 用 `Caffeine.newBuilder().maximumSize(N).build()` (替代 Guava Cache) |
+| 按时间过期 | `expireAfterWrite(Duration.ofMinutes(10))` |
+| 分布式 | Redis `allkeys-lru` 策略 + key 设 TTL |
+| 高并发读 + 低写 | 读用本地缓存(Caffeine) + 写穿透到 Redis(多级缓存) |
+| 防缓存击穿 | `Caffeine` 的 `LoadingCache.get(k, loader)` 内部加锁 |
 
-**题目：** 设计一个单词频率统计功能：给定一段英文文本，统计每个单词出现的次数，并按频率降序输出前 N 个高频词。用 HashMap 实现，分析时间复杂度。
+**面试 2 分钟讲法**:
 
----
+> "LRU 最小实现继承 LinkedHashMap,构造传 accessOrder=true,重写 removeEldestEntry 返回 size > cap。生产不会这么做,因为不线程安全、不能按时间过期。我会用 Caffeine,它内部用类 W-TinyLFU 算法(命中率比 LRU 高),线程安全 + 异步刷新 + 容量、时间、引用三种过期。分布式场景挪到 Redis,maxmemory-policy 设 allkeys-lru,key 加 TTL 兜底。"
 
-### 参考答案
+**🔥追问**:
+- W-TinyLFU 比纯 LRU 好在哪?(答:抗扫描攻击 — 一次性 hot scan 不会污染缓存)
+- 实现 LRU 用 `HashMap + 双向链表` vs 直接继承 `LinkedHashMap` 有什么取舍?(答:前者灵活可控、可加 stats;后者代码量极小但难定制)
+- **LinkedHashMap vs TreeMap 怎么选?**(答:LinkedHashMap 维护插入序或访问序,O(1) get/put;TreeMap 是红黑树按 key 排序,O(log n),需要 key 有序遍历时用)
+- **TreeMap 的 key 怎么排序?Comparable vs Comparator 怎么选?**
+
+**Comparable vs Comparator(配合 02-demo.md 的 ComparatorDemo)**:
 
 ```java
-import java.util.*;
-import java.util.stream.*;
-
-public class WordFrequencyCounter {
-
-    /**
-     * 统计单词频率
-     * @param text 输入文本
-     * @return 单词 -> 出现次数 的映射
-     */
-    public static Map<String, Integer> countFrequency(String text) {
-        Map<String, Integer> freqMap = new HashMap<>();
-
-        // 按非字母字符分割，转小写，过滤空串
-        String[] words = text.toLowerCase().split("[^a-zA-Z]+");
-
-        for (String word : words) {
-            if (!word.isEmpty()) {
-                // getOrDefault 简化计数逻辑
-                freqMap.put(word, freqMap.getOrDefault(word, 0) + 1);
-
-                // 等价写法（Java 8+）：
-                // freqMap.merge(word, 1, Integer::sum);
-            }
-        }
-        return freqMap;
+// ComparatorDemo 中 Employee 实现 Comparable —— "自然顺序",侵入式
+class Employee implements Comparable<Employee> {
+    String name; int salary;
+    @Override
+    public int compareTo(Employee other) {
+        return Integer.compare(this.salary, other.salary);  // 按薪资升序
     }
-
-    /**
-     * 获取出现频率最高的 topN 个单词
-     */
-    public static List<Map.Entry<String, Integer>> getTopN(
-            Map<String, Integer> freqMap, int n) {
-        return freqMap.entrySet().stream()
-            .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-            .limit(n)
-            .collect(Collectors.toList());
-    }
-
-    public static void main(String[] args) {
-        String text = "to be or not to be that is the question " +
-                      "whether tis nobler in the mind to suffer";
-
-        Map<String, Integer> freq = countFrequency(text);
-
-        System.out.println("=== 全部单词频率 ===");
-        freq.entrySet().stream()
-            .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
-            .forEach(e -> System.out.println(e.getKey() + ": " + e.getValue()));
-
-        System.out.println("\n=== Top 5 高频词 ===");
-        getTopN(freq, 5).forEach(e ->
-            System.out.println(e.getKey() + " -> " + e.getValue() + " 次"));
-    }
+    @Override public String toString() { return name + "(" + salary + ")"; }
 }
+
+// 临时要换一种排序? 用 Comparator —— 非侵入,可多种
+list.sort(Comparator.comparing(Employee::getName));               // 按名字
+list.sort(Comparator.comparingInt(Employee::getSalary).reversed());// 薪资降序
+TreeMap<Employee, String> map = new TreeMap<>(
+    Comparator.comparing(Employee::getName));                    // 给 TreeMap 注入比较器
 ```
 
-**时间复杂度分析：**
+| 维度 | Comparable | Comparator |
+|---|---|---|
+| 接口位置 | `java.lang` | `java.util` |
+| 方法 | `compareTo(T)` | `compare(T, T)` |
+| 排序源 | 类自身的"自然顺序" | 外部定义,可多个 |
+| 侵入性 | 改类源码 | 不改类 |
+| 使用场景 | 类只会按一种方式排(如 Integer) | 同一对象多种排序需求 |
 
-| 操作 | 时间复杂度 | 说明 |
-|------|-----------|------|
-| 分割文本 | O(n) | n 为文本字符数 |
-| 遍历单词并 put | O(w) | w 为单词数，HashMap put 均摊 O(1) |
-| 排序获取 TopN | O(k log k) | k 为不重复单词数 |
-| **整体** | **O(n + k log k)** | 瓶颈在排序 |
+**返回值约定**:负数→this 排前;0→相等;正数→other 排前。**陷阱**:`a.salary - b.salary` 在 int 溢出时会返回错值,必须 `Integer.compare(a, b)`。
 
-**空间复杂度：** O(k)，k 为不重复单词数。
+---
 
-**优化方向：**
-- 若只需 TopN 而不需要全排序，可用 **最小堆（PriorityQueue）** 将排序降为 O(k log N)。
-- 大规模文本（如 GB 级）需要考虑分片处理或 MapReduce。
+## 通过标准
+
+- [ ] 能讲清 HashMap 数据结构 + 树化双条件(链长 ≥8 && cap ≥64)+ 反树化阈值 6
+- [ ] 能默写 put 流程 + 扰动函数 + 为什么用 ^ 不用 +
+- [ ] 能识别 BadKey 的灾难,讲清 equals/hashCode 三契约
+- [ ] 能默写 HashMap / Hashtable / ConcurrentHashMap 三方对比 + CHM JDK8 实现
+- [ ] 能现场写 LRU(LinkedHashMap 版),讲清生产用 Caffeine/Redis 的理由
+- [ ] 能讲清 Comparable vs Comparator 的差异 + TreeMap 的两种构造方式

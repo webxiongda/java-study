@@ -1,6 +1,14 @@
 # Chapter 53 并发安全 - 自测与验收
 
-## Q1 概念: synchronized vs ReentrantLock 详细对比
+> 严格按照 `docs/superpowers/specs/2026-05-25-check-template.md` 模板。
+> 覆盖率自检:`node scripts/check-coverage.mjs '^53-'`
+
+---
+
+### Q1 [L2·对比·章节内测] synchronized vs ReentrantLock 详细对比
+
+**考点**: synchronized, ReentrantLock, AQS
+**参考答案**:
 
 | 维度 | synchronized | ReentrantLock |
 |---|---|---|
@@ -21,9 +29,15 @@
 
 **JDK 21 提醒**: 虚拟线程内的 `synchronized` 会 **pin 载体线程** (JDK 24 改善), 高并发场景换 `ReentrantLock` 避免 pin。
 
+**🔥追问**: AQS 的 state 字段在 ReentrantLock 中怎么用?为什么 Condition 必须配合 ReentrantLock?
+**关联**: interview-bank.md#sync-vs-reentrantlock
+
 ---
 
-## Q2 概念: CAS 三大问题与解决
+### Q2 [L2·概念·章节内测] CAS 三大问题与解决
+
+**考点**: CAS, ABA, LongAdder, AtomicStampedReference
+**参考答案**:
 
 **1. ABA**
 
@@ -64,9 +78,15 @@ CAS 一次只能改一个 long/int/ref。
 - 高竞争 (统计 PV / QPS): LongAdder 完爆 (实测可快 3-10 倍)
 - 需要精确实时值 (库存): AtomicLong (LongAdder 的 sum 不是强一致快照)
 
+**🔥追问**: LongAdder 的 sum() 为什么不是强一致的?Cell 数组怎么扩容?
+**关联**: interview-bank.md#volatile-semantics (CAS + volatile 配合实现无锁)
+
 ---
 
-## Q3 代码审查: 找出问题
+### Q3 [L3·Debug·面试高频] 找出 UserCache + TraceContext 的并发问题
+
+**考点**: HashMap 线程不安全, ThreadLocal 泄漏, 缓存设计
+**参考答案**:
 
 ```java
 public class UserCache {
@@ -128,9 +148,15 @@ public class TraceContext {
 }
 ```
 
+**🔥追问**: ThreadLocalMap 的 Entry 用的是弱引用 key + 强引用 value, 为什么这样设计?为什么仍可能泄漏?
+**关联**: interview-bank.md#hashmap-thread-unsafe, interview-bank.md#threadlocal-leak
+
 ---
 
-## Q4 代码题: 用 ReentrantLock + Condition 实现有界缓冲区
+### Q4 [L2·代码编写·章节内测] 用 ReentrantLock + Condition 实现有界缓冲区
+
+**考点**: ReentrantLock, Condition, 虚假唤醒, signal vs signalAll
+**参考答案**:
 
 ```java
 public class BoundedBuffer<T> {
@@ -177,9 +203,14 @@ public class BoundedBuffer<T> {
 - finally 保证 unlock
 - 实际生产用 `ArrayBlockingQueue`, 不要造轮子
 
+**🔥追问**: 为什么必须 while 不能 if?Condition 的 signal 怎么知道唤醒哪个线程?
+
 ---
 
-## Q5 综合题: 一个秒杀系统怎么保证库存不超卖?
+### Q5 [L3·场景设计·面试高频] 秒杀系统怎么保证库存不超卖?
+
+**考点**: AtomicInteger, 分布式锁, Redis Lua, MQ 削峰
+**参考答案**:
 
 **问题描述**: 商品库存 10 件, 1000 人同时下单, 不能超卖 (卖出去 11 件)。
 
@@ -251,6 +282,9 @@ DB 乐观锁兜底 (双保险)
 
 **面试 2 分钟讲法**:
 > "单机用 AtomicInteger 的 CAS, 不需要锁。 分布式必须落到统一存储: DB 行锁 (UPDATE WHERE stock > 0) 简单但慢; Redis Lua 扣减最优, 配合 MQ 异步落库削峰。 我会做 4 层防超卖: 网关限流挡 95%, Redis Lua 原子扣 (库存预热), MQ 削峰, DB 乐观锁兜底。 库存数据回收用定时对账。"
+
+**🔥追问**: Redis Lua 扣减成功但 DB 异步落库失败, 怎么对账?MQ 重复消费怎么幂等?
+**关联**: interview-bank.md#distributed-lock-redisson, interview-bank.md#design-rate-limiter
 
 ---
 

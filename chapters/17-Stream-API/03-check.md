@@ -1,341 +1,348 @@
-# Chapter 17 Stream API - 自测题
+# Chapter 17 Stream API - 自测与验收
 
-## Q1（概念）：Stream 的惰性求值是什么意思？中间操作和终端操作的区别？
-
-**参考答案：**
-
-**惰性求值（Lazy Evaluation）：**
-Stream 的中间操作不会立即执行，只有在终端操作被调用时，整条 Pipeline 才会真正执行。这意味着如果没有终端操作，所有中间操作的代码都不会运行。
-
-```java
-List<String> names = Arrays.asList("Alice", "Bob", "Charlie", "David");
-
-// 以下代码不会打印任何内容，因为没有终端操作
-Stream<String> stream = names.stream()
-    .filter(name -> {
-        System.out.println("filtering: " + name); // 不会执行
-        return name.startsWith("A");
-    })
-    .map(String::toUpperCase); // 不会执行
-
-// 加上终端操作后才真正执行
-stream.forEach(System.out::println); // 此时 filter 和 map 才执行
-```
-
-**中间操作（Intermediate Operations）：**
-- 返回值仍然是 Stream
-- 具有惰性，不会立即执行
-- 可以链式调用多个
-- 常见：filter、map、flatMap、distinct、sorted、limit、skip、peek
-
-**终端操作（Terminal Operations）：**
-- 返回非 Stream 类型（void、集合、Optional、基本类型等）
-- 触发整条 Pipeline 的执行
-- 一个 Stream 只能有一个终端操作，调用后 Stream 消费完毕不可再用
-- 常见：forEach、collect、reduce、count、findFirst、anyMatch、toArray
-
-**惰性求值的好处：**
-- 短路优化：`findFirst()` 找到第一个后立即停止，不需要遍历全部元素
-- 融合优化：JVM 可将多个中间操作合并为一次遍历
+> 模板见 `docs/superpowers/specs/2026-05-25-check-template.md`
+> 覆盖率自检:`node scripts/check-coverage.mjs '^17-'`
 
 ---
 
-## Q2（概念）：collect(Collectors.groupingBy()) 的工作原理？
+### Q1 [L1·概念·章节内测] 惰性求值与流水线执行 + 短路操作有哪些?
 
-**参考答案：**
+**考点**: 惰性求值与流水线执行, 中间操作 vs 终端操作, 短路操作
+**参考答案**:
 
-`Collectors.groupingBy()` 是一个下游收集器，核心思路是：**遍历 Stream 中的每个元素，按指定的分类函数（classifier）将元素分到不同的"桶"（bucket）中，最终生成 `Map<K, List<V>>`**。
+**惰性求值(Lazy Evaluation)**:中间操作不立即执行,只描述"要做什么";终端操作才触发整条 Pipeline 真正运行。
 
-**基本形式：**
 ```java
-// 单参数：分类函数 → 返回 Map<K, List<T>>
-Map<String, List<Order>> byStatus = orders.stream()
-    .collect(Collectors.groupingBy(Order::getStatus));
+// 没有终端操作 → 一个字符都不会打印
+Stream<String> s = List.of("a", "bb", "ccc").stream()
+    .filter(x -> { System.out.println("filter: " + x); return x.length() > 1; })
+    .map(x -> { System.out.println("map: " + x); return x.toUpperCase(); });
+// (此处无输出)
 
-// 双参数：分类函数 + 下游收集器
+s.forEach(System.out::println);  // 此时 filter / map 才被执行
+```
+
+**中间操作 vs 终端操作**:
+
+| 维度 | 中间操作 | 终端操作 |
+|---|---|---|
+| 返回类型 | Stream | 非 Stream(集合/Optional/基本类型/void) |
+| 是否触发执行 | 否(描述) | 是 |
+| 链式 | 可多个 | 只能 1 个,执行后 Stream 关闭 |
+| 例子 | filter / map / flatMap / sorted / distinct / limit / skip / peek | collect / reduce / count / forEach / findFirst / anyMatch / toArray |
+
+**短路操作(满足条件立刻停)**:
+
+- 终端:`findFirst` / `findAny` / `anyMatch` / `allMatch` / `noneMatch`
+- 中间:`limit`
+
+```java
+// 不会真的产生 1_000_000 个元素 — limit 是短路的
+Optional<Integer> first = Stream.iterate(1, n -> n + 1)
+    .filter(n -> n > 500)
+    .limit(1_000_000)
+    .findFirst();   // 找到 501 立即返回
+```
+
+**JVM 的"垂直执行"(vertical slicing)**:对无状态操作,JVM 让一个元素依次过完所有中间操作,而不是先全 filter 再全 map。所以 `stream.filter(...).findFirst()` 在百万元素里可能只处理 1 个元素。
+
+**🔥追问**:有状态 vs 无状态中间操作?(答:`sorted` / `distinct` / `limit` / `skip` 需要看到多个元素才决定 → 有状态;`filter` / `map` / `peek` 元素独立 → 无状态。并行流里有状态操作会变贵)
+
+---
+
+### Q2 [L2·代码阅读·章节内测] 解释 GroupingByDemo 里的多级分组 + downstream 工作原理
+
+**考点**: collect, groupingBy, partitioningBy, downstream Collector, GroupingByDemo, Order
+**参考答案**:
+
+`groupingBy(classifier, downstreamCollector)` = **按 classifier 分桶,每个桶里再做一次 collect(downstream)**。
+
+参考 02-demo.md 的 `GroupingByDemo`(Order: orderId / category / status / amount):
+
+```java
+// 1. 单参数:Map<分类, List<整个对象>>
+Map<String, List<Order>> byCategory = orders.stream()
+    .collect(Collectors.groupingBy(Order::category));
+
+// 2. 双参数:每桶再 counting() → Map<状态, 数量>
 Map<String, Long> countByStatus = orders.stream()
-    .collect(Collectors.groupingBy(
-        Order::getStatus,          // 分类函数
-        Collectors.counting()      // 下游收集器：统计每组数量
-    ));
+    .collect(Collectors.groupingBy(Order::status, Collectors.counting()));
 
-// 三参数：分类函数 + Map工厂 + 下游收集器
-Map<String, Long> sortedCountByStatus = orders.stream()
-    .collect(Collectors.groupingBy(
-        Order::getStatus,
-        TreeMap::new,              // 使用 TreeMap 保证 key 有序
-        Collectors.counting()
-    ));
+// 3. summingDouble:每桶求和 → Map<分类, 已支付总收入>
+Map<String, Double> revenueByCategory = orders.stream()
+    .filter(o -> "PAID".equals(o.status()))
+    .collect(Collectors.groupingBy(Order::category,
+        Collectors.summingDouble(Order::amount)));
+
+// 4. maxBy:每桶找最大 → Map<分类, Optional<最贵订单>>
+Map<String, Optional<Order>> mostExp = orders.stream()
+    .collect(Collectors.groupingBy(Order::category,
+        Collectors.maxBy(Comparator.comparingDouble(Order::amount))));
+
+// 5. 多级分组:嵌套 groupingBy → Map<分类, Map<状态, 数量>>
+Map<String, Map<String, Long>> multi = orders.stream()
+    .collect(Collectors.groupingBy(Order::category,
+        Collectors.groupingBy(Order::status, Collectors.counting())));
 ```
 
-**工作流程：**
-1. Stream 中每个元素调用 classifier 函数得到 key
-2. 以 key 为桶，将元素放入对应桶（默认 `ArrayList`）
-3. 对每个桶应用下游收集器（默认是 `toList()`）
-4. 返回最终 `Map<K, 下游收集结果>`
+**partitioningBy vs groupingBy(boolean classifier)**:
 
-**常用下游收集器组合：**
 ```java
-// 每组只保留金额字段
-Map<String, List<Double>> amountsByStatus = orders.stream()
-    .collect(Collectors.groupingBy(
-        Order::getStatus,
-        Collectors.mapping(Order::getAmount, Collectors.toList())
-    ));
-
-// 每组求和
-Map<Long, Double> totalByUser = orders.stream()
-    .collect(Collectors.groupingBy(
-        Order::getUserId,
-        Collectors.summingDouble(Order::getAmount)
-    ));
+// partitioningBy 性能更好 — 只有 true/false 两个桶,固定结构
+Map<Boolean, List<Order>> paidOrNot = orders.stream()
+    .collect(Collectors.partitioningBy(o -> "PAID".equals(o.status())));
+// {true=[...已支付...], false=[...未支付...]}
 ```
+
+| 维度 | groupingBy | partitioningBy |
+|---|---|---|
+| 桶数 | N(classifier 返回值) | 固定 2 个 |
+| key 类型 | 任意 | Boolean |
+| key 缺失 | 桶不出现 | true/false 一定都有(可能是空 list) |
+| 性能 | 一般 | 更好(避免 HashMap 开销) |
+
+**🔥追问**:`groupingBy` 默认返回什么 Map?要保证有序怎么办?
+
+**参考答案**:默认返回 `HashMap`(无序)。要有序用三参数版指定 Map 工厂:
+```java
+new TreeMap<>()   // 按 key 自然序
+new LinkedHashMap<>()  // 按插入(遇到)顺序
+```
+
+**关联**: interview-bank.md#stream-groupingby-downstream
 
 ---
 
-## Q3（实操）：给定 List<Order>（含 userId、amount、status 字段），用 Stream 写出：统计每个用户的总消费金额（Map<Long, Double>）
+### Q3 [L2·代码编写·章节内测] 用 reduce 三参数版 + joining,完成 ReduceDemo 里的"工程部薪资统计"题
 
-**参考答案：**
+**考点**: reduce, collect, joining, ReduceDemo, Employee, SalaryAccumulator
+**参考答案**:
+
+题:给定 `List<Employee>`(name / dept / salary),求工程部(`"Engineering"`)的 **总薪资 + 人数 + 平均薪资 + 名单字符串(用 ", " 连接)**,只能遍历一次。
 
 ```java
-import java.util.*;
-import java.util.stream.*;
+record Employee(String name, String dept, int salary) {}
 
-public class OrderStats {
-
-    static class Order {
-        private Long userId;
-        private Double amount;
-        private String status;
-
-        public Order(Long userId, Double amount, String status) {
-            this.userId = userId;
-            this.amount = amount;
-            this.status = status;
-        }
-
-        public Long getUserId() { return userId; }
-        public Double getAmount() { return amount; }
-        public String getStatus() { return status; }
-    }
-
-    public static void main(String[] args) {
-        List<Order> orders = Arrays.asList(
-            new Order(1L, 100.0, "PAID"),
-            new Order(1L, 200.0, "PAID"),
-            new Order(2L, 150.0, "PAID"),
-            new Order(2L, 50.0,  "REFUNDED"),
-            new Order(3L, 300.0, "PAID")
-        );
-
-        // 方式1：groupingBy + summingDouble（推荐）
-        Map<Long, Double> totalByUser = orders.stream()
-            .collect(Collectors.groupingBy(
-                Order::getUserId,
-                Collectors.summingDouble(Order::getAmount)
-            ));
-
-        System.out.println(totalByUser);
-        // {1=300.0, 2=200.0, 3=300.0}
-
-        // 方式2：toMap + merge（适合理解原理）
-        Map<Long, Double> totalByUser2 = orders.stream()
-            .collect(Collectors.toMap(
-                Order::getUserId,
-                Order::getAmount,
-                Double::sum           // mergeFunction：key 冲突时求和
-            ));
-
-        System.out.println(totalByUser2);
-
-        // 扩展：只统计 PAID 状态的消费
-        Map<Long, Double> paidTotalByUser = orders.stream()
-            .filter(o -> "PAID".equals(o.getStatus()))
-            .collect(Collectors.groupingBy(
-                Order::getUserId,
-                Collectors.summingDouble(Order::getAmount)
-            ));
-
-        System.out.println("PAID only: " + paidTotalByUser);
-    }
+// 方案 A:用 reduce 三参数版(并行安全)做累积
+record SalaryAccumulator(long totalSalary, int count, String names) {
+    double average() { return count == 0 ? 0 : (double) totalSalary / count; }
 }
-```
 
-**关键点：**
-- `summingDouble` 比先 `toList` 再手动求和更简洁
-- `toMap` 的第三个参数 `mergeFunction` 处理 key 冲突，不能省略（否则重复 key 会抛异常）
-
----
-
-## Q4（实操）：找出以下 Stream 代码的问题并改正
-
-**有问题的代码：**
-```java
-List<String> words = Arrays.asList("hello", "world", "java", "stream");
-
-// 问题代码 1
-Stream<String> s = words.stream();
-s.filter(w -> w.length() > 4).forEach(System.out::println);
-s.map(String::toUpperCase).forEach(System.out::println); // 第二次使用同一个 Stream
-
-// 问题代码 2
-List<Integer> numbers = Arrays.asList(1, 2, 3, 4, 5);
-int sum = 0;
-numbers.stream().forEach(n -> sum += n); // 在 lambda 中修改外部变量
-
-// 问题代码 3
-List<List<Integer>> nested = Arrays.asList(
-    Arrays.asList(1, 2, 3),
-    Arrays.asList(4, 5, 6)
+List<Employee> employees = List.of(
+    new Employee("Alice", "Engineering", 15000),
+    new Employee("Bob",   "Engineering", 18000),
+    new Employee("Carol", "Marketing",   12000),
+    new Employee("Dave",  "Engineering", 20000)
 );
-List<Integer> flat = nested.stream()
-    .map(list -> list.stream())          // 应该用 flatMap
-    .collect(Collectors.toList());
+
+SalaryAccumulator stats = employees.stream()
+    .filter(e -> "Engineering".equals(e.dept()))
+    .reduce(
+        new SalaryAccumulator(0, 0, ""),              // identity
+        (acc, emp) -> new SalaryAccumulator(           // accumulator
+            acc.totalSalary() + emp.salary(),
+            acc.count() + 1,
+            acc.names().isEmpty() ? emp.name() : acc.names() + ", " + emp.name()
+        ),
+        (a, b) -> new SalaryAccumulator(               // combiner(并行流用)
+            a.totalSalary() + b.totalSalary(),
+            a.count() + b.count(),
+            a.names().isEmpty() ? b.names() : (b.names().isEmpty() ? a.names() : a.names() + ", " + b.names())
+        )
+    );
+System.out.printf("总薪资=%d 人数=%d 平均=%.0f 名单=[%s]%n",
+    stats.totalSalary(), stats.count(), stats.average(), stats.names());
+// 总薪资=53000 人数=3 平均=17667 名单=[Alice, Bob, Dave]
 ```
 
-**参考答案（问题分析与改正）：**
+**为什么 reduce 要传 combiner?**
 
-**问题1：Stream 被重复消费**
+`reduce(identity, accumulator, combiner)` 第三参是并行流合并多个部分结果用。顺序流不会调它,但必须传(签名要求)。一般规则:**accumulator 把"累加器 + 元素"合并;combiner 把"两个累加器"合并**。
+
+**方案 B(更地道)— 用 collect / joining**:
+
 ```java
-// 错误：Stream 一旦终端操作执行后就关闭，不能再次使用
-// 改正：每次从 List 创建新的 Stream
-words.stream()
-    .filter(w -> w.length() > 4)
-    .forEach(System.out::println);
+// 多个独立统计 → 分别 collect 也行,但要遍历多次
+String engNames = employees.stream()
+    .filter(e -> "Engineering".equals(e.dept()))
+    .map(Employee::name)
+    .collect(Collectors.joining(", ", "[", "]"));   // "[Alice, Bob, Dave]"
 
-words.stream()
-    .map(String::toUpperCase)
-    .forEach(System.out::println);
+IntSummaryStatistics engStat = employees.stream()
+    .filter(e -> "Engineering".equals(e.dept()))
+    .mapToInt(Employee::salary)
+    .summaryStatistics();    // count/sum/min/max/avg 一次拿全
 ```
 
-**问题2：Lambda 中修改外部局部变量（编译报错）**
-```java
-// 错误：lambda 中使用的外部变量必须是 effectively final，不能被修改
-// 改正：使用 reduce 或 mapToInt().sum()
-int sum = numbers.stream()
-    .reduce(0, Integer::sum);
-// 或
-int sum2 = numbers.stream()
-    .mapToInt(Integer::intValue)
-    .sum();
-```
+**reduce vs collect 该选谁?**
 
-**问题3：map 返回 Stream<Stream<Integer>> 而不是扁平化结果**
-```java
-// 错误：map 把每个 List 转成了 Stream，结果类型是 Stream<Stream<Integer>>
-// 改正：使用 flatMap 进行扁平化
-List<Integer> flat = nested.stream()
-    .flatMap(List::stream)               // flatMap 自动展开内层 Stream
-    .collect(Collectors.toList());
-// 结果：[1, 2, 3, 4, 5, 6]
-```
+| | reduce | collect |
+|---|---|---|
+| 适合 | 把多个值"折"成一个不可变值(求和、求积、字符串拼接小数据) | 用可变容器累积(构集合、Map、分组) |
+| 并行 | 函数必须满足结合律 | 内置支持(combiner 自动合并部分容器) |
+| 构集合 | ❌ 每步都新建对象,性能差 | ✅ 用 ArrayList 累积 |
+| 字符串拼接 | 小数据可,大数据慢 | `Collectors.joining` 内部 StringBuilder |
+
+**🔥追问**:为什么 `IntStream.sum()` 比 `Stream<Integer>.reduce(0, Integer::sum)` 快?(答:IntStream 是基本类型流,避免 Integer 装箱/拆箱开销)
+
+**关联**: interview-bank.md#stream-reduce-vs-collect
 
 ---
 
-## Q5（项目应用）：用 Stream 实现对商品列表按类别分组，每组按价格排序，取前3名
+### Q4 [L2·Debug·面试高频] 5 段 Stream 代码各有什么坑?改正
 
-**参考答案：**
+**考点**: Stream 只能用一次, toMap 重复 key, map vs flatMap, parallelStream 陷阱, toList 不可变
+**参考答案**:
 
 ```java
-import java.util.*;
-import java.util.stream.*;
+// === 坑 1:Stream 二次消费 ===
+Stream<String> s = words.stream();
+long n = s.count();
+List<String> lst = s.collect(Collectors.toList());   // ❌ IllegalStateException
 
-public class ProductRanking {
+// 改:每次新建 Stream
+long n2 = words.stream().count();
+List<String> lst2 = words.stream().collect(Collectors.toList());
 
-    static class Product {
-        private String name;
-        private String category;
-        private double price;
+// === 坑 2:lambda 改外部局部变量 ===
+int sum = 0;
+numbers.stream().forEach(x -> sum += x);   // ❌ 编译报错(必须 effectively final)
 
-        public Product(String name, String category, double price) {
-            this.name = name;
-            this.category = category;
-            this.price = price;
-        }
+// 改:用 reduce / mapToInt().sum()
+int s1 = numbers.stream().mapToInt(Integer::intValue).sum();
 
-        public String getName() { return name; }
-        public String getCategory() { return category; }
-        public double getPrice() { return price; }
+// === 坑 3:map 套 Stream → Stream<Stream<T>>,要扁平化用 flatMap ===
+List<Integer> flat = nested.stream()
+    .map(List::stream)                       // ❌ 类型变成 Stream<Stream<Integer>>
+    .collect(Collectors.toList());
 
-        @Override
-        public String toString() {
-            return name + "(" + price + ")";
-        }
-    }
+// 改:flatMap
+List<Integer> flat2 = nested.stream()
+    .flatMap(List::stream)                   // ✅ Stream<Integer>
+    .collect(Collectors.toList());
 
-    public static void main(String[] args) {
-        List<Product> products = Arrays.asList(
-            new Product("iPhone 15",   "手机", 5999.0),
-            new Product("小米14",      "手机", 3999.0),
-            new Product("华为Mate60",  "手机", 6999.0),
-            new Product("OPPO Find X", "手机", 4999.0),
-            new Product("MacBook Pro", "电脑", 14999.0),
-            new Product("联想ThinkPad","电脑", 8999.0),
-            new Product("华为MateBook","电脑", 7999.0),
-            new Product("戴尔XPS",     "电脑", 12999.0),
-            new Product("AirPods Pro", "耳机", 1999.0),
-            new Product("索尼WH-1000", "耳机", 2499.0),
-            new Product("华为FreeBuds","耳机", 999.0)
-        );
+// === 坑 4:toMap 遇到重复 key 抛 IllegalStateException ===
+Map<Character, String> m = words.stream()
+    .collect(Collectors.toMap(s -> s.charAt(0), s -> s));   // ❌ 'a' 重复
 
-        // 核心实现：按类别分组 → 每组按价格降序排序 → 取前3名
-        Map<String, List<Product>> top3ByCategory = products.stream()
-            .collect(Collectors.groupingBy(
-                Product::getCategory,
-                Collectors.collectingAndThen(
-                    Collectors.toList(),
-                    list -> list.stream()
-                        .sorted(Comparator.comparingDouble(Product::getPrice).reversed())
-                        .limit(3)
-                        .collect(Collectors.toList())
-                )
-            ));
+// 改 A:提供 merge 函数
+Map<Character, String> m1 = words.stream()
+    .collect(Collectors.toMap(s -> s.charAt(0), s -> s,
+        (existing, newVal) -> existing + "," + newVal));
 
-        // 输出结果
-        top3ByCategory.forEach((category, topProducts) -> {
-            System.out.println("【" + category + "】TOP3：");
-            topProducts.forEach(p ->
-                System.out.printf("  %s - %.0f元%n", p.getName(), p.getPrice())
-            );
-        });
+// 改 B:换 groupingBy(语义更清晰)
+Map<Character, List<String>> m2 = words.stream()
+    .collect(Collectors.groupingBy(s -> s.charAt(0)));
 
-        // 替代写法：先排序再 groupingBy（利用 LinkedHashMap 保持顺序）
-        System.out.println("\n--- 替代写法 ---");
-        Map<String, List<Product>> top3Alt = products.stream()
-            .sorted(Comparator.comparingDouble(Product::getPrice).reversed())
-            .collect(Collectors.groupingBy(Product::getCategory))
-            .entrySet().stream()
-            .collect(Collectors.toMap(
-                Map.Entry::getKey,
-                e -> e.getValue().stream().limit(3).collect(Collectors.toList()),
-                (a, b) -> a,
-                LinkedHashMap::new
-            ));
+// === 坑 5:Java 16 Stream.toList() 返回不可变 List ===
+List<String> r = stream.toList();
+r.add("new");           // ❌ UnsupportedOperationException
 
-        top3Alt.forEach((cat, prods) ->
-            System.out.println(cat + ": " + prods)
-        );
-    }
-}
+// 改:需要可变就用 Collectors.toList() / toCollection(ArrayList::new)
+List<String> r2 = stream.collect(Collectors.toCollection(ArrayList::new));
 ```
 
-**输出示例：**
-```
-【手机】TOP3：
-  华为Mate60 - 6999元
-  iPhone 15 - 5999元
-  OPPO Find X - 4999元
-【电脑】TOP3：
-  MacBook Pro - 14999元
-  戴尔XPS - 12999元
-  联想ThinkPad - 8999元
-【耳机】TOP3：
-  索尼WH-1000 - 2499元
-  AirPods Pro - 1999元
-  华为FreeBuds - 999元
+**🔥追问**:`Stream.toList()` 与 `Collectors.toList()` 你优先选哪个?
+
+**参考答案**:**默认 `Stream.toList()`(JDK 16+)**。理由:
+- 语义清晰("我就要个 List"),不需要拼 `Collectors.xxx`
+- 返回不可变 List,反向逼迫调用方不要修改返回值
+- JVM 可能做内部优化(已知大小一次性分配)
+
+**只有"返回后还要 add/remove"** 时才用 `Collectors.toCollection(ArrayList::new)`(比 `Collectors.toList()` 更明确表达"我要 ArrayList")。
+
+**关联**: interview-bank.md#stream-toMap-pitfall
+
+---
+
+### Q5 [L3·场景设计·面试高频] 用 Stream 实现"按类别分组每组 TOP-N",讨论并行流的选型
+
+**考点**: collectingAndThen, Comparator, 并行流, StreamPipelineDemo, Product
+**参考答案**:
+
+参考 02-demo.md `StreamPipelineDemo` 的 `Product`(id / name / category / price / tags)。需求:**按类别分组,每组按价格降序取 TOP-3**,500 个商品。
+
+**写法 1:groupingBy + collectingAndThen(标准答案)**
+
+```java
+record Product(String id, String name, String category, double price, List<String> tags) {}
+
+Map<String, List<Product>> top3ByCategory = products.stream()
+    .collect(Collectors.groupingBy(
+        Product::category,
+        Collectors.collectingAndThen(
+            Collectors.toList(),
+            list -> list.stream()
+                .sorted(Comparator.comparingDouble(Product::price).reversed())
+                .limit(3)
+                .toList())
+    ));
 ```
 
-**关键点：**
-- `collectingAndThen`：先用一个收集器收集，再对结果做后处理
-- `Comparator.comparingDouble(...).reversed()`：按价格降序
-- 耳机只有3个，`limit(3)` 不会报错，会返回所有元素
+`collectingAndThen(downstream, finisher)` = 先用 downstream 收集,再对结果做一次后处理。这里:先 `toList` 拿到该分类全部商品 → 再对 list 排序取前 3。
+
+**写法 2:先排序再 groupingBy**
+
+```java
+Map<String, List<Product>> top3 = products.stream()
+    .sorted(Comparator.comparingDouble(Product::price).reversed())
+    .collect(Collectors.groupingBy(Product::category))
+    .entrySet().stream()
+    .collect(Collectors.toMap(
+        Map.Entry::getKey,
+        e -> e.getValue().stream().limit(3).toList(),
+        (a, b) -> a,
+        LinkedHashMap::new));   // 保持插入顺序
+```
+
+写法 2 排了整个 list,5 万条数据时比写法 1 慢。**写法 1 优**(每个分组单独排,数据量小)。
+
+**这里能不能用并行流?**
+
+```java
+products.parallelStream()...   // ❓
+```
+
+**结论**:500 个商品 = **不能**。
+
+**并行流 4 个陷阱**:
+
+1. **数据量小 → 反而更慢**。并行流走 `ForkJoinPool.commonPool`,任务拆分 + 线程调度开销在小数据下吃光收益。**经验**:CPU 密集型 + 数据量 ≥ 1 万才考虑。
+2. **IO 操作 → 灾难**。`commonPool` 默认线程数 = `CPU 核数 - 1`,IO 阻塞会把池打满,拖累整个 JVM 内所有用并行流的代码。
+3. **有状态操作贵**。`sorted` / `distinct` / `limit` 并行后要合并多个子结果,fork/join 开销大;`forEachOrdered` 直接放弃并行优势。
+4. **副作用 = 线程安全坑**。lambda 里写共享变量(写 List、改 Map、累加 int)会有竞争。`stream.forEach(list::add)` 在并行流下大概率丢数据。
+
+**判断并行流是否值得**:
+
+```java
+// 满足以下全部才考虑 parallel:
+// 1. 数据量 ≥ 10_000
+// 2. 单元素处理是 CPU 密集(纯计算,无 IO,无锁)
+// 3. 操作是无状态、无副作用
+// 4. 不需要严格顺序
+
+// 反例 — 这种千万别 parallel:
+list.parallelStream()
+    .map(id -> db.findById(id))     // ❌ IO
+    .forEach(results::add);          // ❌ 共享可变状态
+```
+
+**面试 2 分钟讲法**:
+
+> "标准实现是 groupingBy + collectingAndThen,在 downstream 里对每个分组排序取 TOP-3,这样比'先全排序再分组'快,因为局部排序的数据量小。能不能并行?要看 4 条:数据量 ≥ 1 万、CPU 密集、无状态、不要求顺序。500 个商品没必要并行;真要做 TOP-N over 千万级数据,我宁可用堆(`PriorityQueue` size N,新元素和堆顶比),时间 O(n log N),不依赖排序整个列表;再大就上 MapReduce 或流式系统了。"
+
+**🔥追问**:`Collectors.toList()` 内部其实是 ArrayList,为什么不直接 `new ArrayList<>(stream)`?
+
+**参考答案**:`ArrayList<>(Collection)` 要求传入 Collection,Stream 不是 Collection(它不存储)。`stream.toList()` / `collect(Collectors.toList())` 是从无到有累积一个 List 的标准入口。
+
+**关联**: interview-bank.md#stream-parallel-cautions
+
+---
+
+## 通过标准
+
+- [ ] 能讲清惰性求值 + 中间/终端 + 6 个短路操作 + 有状态/无状态区别
+- [ ] 能默写 `groupingBy(classifier, downstreamCollector)` 的 4 种 downstream 组合 + 多级分组
+- [ ] 能用 reduce 三参数版完成"一次遍历多统计"题,并讲清 combiner 的角色
+- [ ] 能识别 Stream 5 个常见坑:二次消费 / 外部变量 / map vs flatMap / toMap 重复 key / toList 不可变
+- [ ] 能现场写 TOP-N over 分组,并讲清并行流 4 个适用条件 / 4 个陷阱

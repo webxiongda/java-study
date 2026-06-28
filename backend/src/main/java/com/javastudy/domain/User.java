@@ -45,6 +45,10 @@ public class User {
         return secretHash;
     }
 
+    public void updateSecretHash(String secretHash) {
+        this.secretHash = secretHash;
+    }
+
     public LocalDateTime getCreatedAt() {
         return createdAt;
     }

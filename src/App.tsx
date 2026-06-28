@@ -276,6 +276,7 @@ function App() {
 
   useEffect(() => {
     if (!authUser) return;
+    setActiveLayer('theory');
     api<ChapterContent>(`/api/chapters/${selectedNo}`)
       .then((data) => {
         setChapter(data);
@@ -474,7 +475,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">J</div>
+          <img className="brand-logo" src="/java-learning-logo.svg" alt="Java Learning" />
           <div>
             <h1>Java 60 天</h1>
             <p>{authUser.username}</p>
@@ -868,8 +869,8 @@ function AuthScreen({
   setMessage: (message: string) => void;
 }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [username, setUsername] = useState('');
-  const [secret, setSecret] = useState('');
+  const [username, setUsername] = useState('demo');
+  const [secret, setSecret] = useState('java-study-demo-secret-2026');
   const [busy, setBusy] = useState(false);
 
   async function submit(event: FormEvent) {
@@ -893,7 +894,7 @@ function AuthScreen({
     <main className="auth-page">
       <section className="auth-panel">
         <div className="brand auth-brand">
-          <div className="brand-mark">J</div>
+          <img className="brand-logo" src="/java-learning-logo.svg" alt="Java Learning" />
           <div>
             <h1>Java 60 天</h1>
             <p>账号维度学习工作台</p>

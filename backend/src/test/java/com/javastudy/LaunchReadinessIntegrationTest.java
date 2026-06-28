@@ -66,6 +66,17 @@ class LaunchReadinessIntegrationTest {
         assertThat(chapter.getBody().content()).containsKeys("theory", "demo", "check", "project");
     }
 
+    @Test
+    void seededDemoUserCanLogin() {
+        var request = new AuthDtos.AuthRequest("demo", "java-study-demo-secret-2026");
+        var response = restTemplate.postForEntity("/api/auth/login", request, AuthDtos.AuthResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().token()).isNotBlank();
+        assertThat(response.getBody().user().username()).isEqualTo("demo");
+    }
+
     private AuthDtos.AuthResponse registerUser() {
         var username = "launch_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         var request = new AuthDtos.AuthRequest(username, "launch-readiness-secret");

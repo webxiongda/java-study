@@ -6,9 +6,10 @@
   "scripts": {
     "db:up": "docker start java-study-mysql || docker run --name java-study-mysql -e MYSQL_ROOT_PASSWORD=java_study_root -e MYSQL_DATABASE=java_study -p 3306:3306 -v java-study-mysql-data:/var/lib/mysql -d mysql:8.4 --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci",
     "db:down": "docker stop java-study-mysql",
-    "dev": "concurrently \"mvn -f backend/pom.xml spring-boot:run\" \"vite --host 0.0.0.0\"",
-    "backend": "mvn -f backend/pom.xml spring-boot:run",
-    "server": "mvn -f backend/pom.xml spring-boot:run",
+    "dev": "concurrently \"npm run backend\" \"vite --host 0.0.0.0\"",
+    "backend": "SPRING_PROFILES_ACTIVE=local mvn -f backend/pom.xml spring-boot:run",
+    "backend:mysql": "JWT_SECRET=java-study-local-jwt-secret-2026-keep-login-32chars mvn -f backend/pom.xml spring-boot:run",
+    "server": "npm run backend",
     "client": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",

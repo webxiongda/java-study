@@ -75,16 +75,16 @@ button:disabled {
   background: #f2c15b;
 }
 
-.brand-mark {
+.brand-logo {
   display: grid;
-  place-items: center;
   width: 42px;
   height: 42px;
+  flex: 0 0 42px;
   border-radius: 8px;
-  color: #17211f;
-  background: #f2c15b;
-  font-weight: 800;
-  font-size: 24px;
+  background: #ffffff;
+  object-fit: contain;
+  padding: 3px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
 }
 
 .brand h1 {
@@ -244,6 +244,14 @@ button:disabled {
 .auth-brand {
   color: #17211f;
   margin-bottom: 22px;
+}
+
+.auth-brand .brand-logo {
+  width: 58px;
+  height: 58px;
+  flex-basis: 58px;
+  padding: 4px;
+  box-shadow: 0 10px 28px rgba(23, 33, 31, 0.12);
 }
 
 .auth-brand p {
@@ -878,10 +886,10 @@ button:disabled {
     justify-content: space-between;
   }
 
-  .brand-mark {
+  .brand-logo {
     width: 38px;
     height: 38px;
-    font-size: 21px;
+    flex-basis: 38px;
   }
 
   .brand h1 {
