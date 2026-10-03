@@ -31,12 +31,43 @@ class LaunchReadinessIntegrationTest {
         assertThat(response.getBody()).containsEntry("service", "java-study-backend");
     }
 
+    /**
+     * 免登录契约：未携带 token 的请求不再返回 401，而是落到默认用户（demo）。
+     * 原断言为 UNAUTHORIZED，已随「去掉账号登录」的需求改为断言默认用户身份。
+     */
     @Test
-    void protectedSummaryRejectsAnonymousRequests() {
+    void protectedSummaryFallsBackToDefaultUserWithoutToken() {
         var response = restTemplate.getForEntity("/api/summary", Map.class);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
-        assertThat(response.getBody()).containsEntry("error", "未登录");
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsEntry("total", 60);
+    }
+
+    @Test
+    void anonymousMeReturnsDefaultUser() {
+        var response = restTemplate.getForEntity("/api/auth/me", Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).containsEntry("username", "demo");
+    }
+
+    /**
+     * 免登录不应把登录能力弄坏：显式登录仍然可用，且登录后身份为该账号本身。
+     */
+    @Test
+    void explicitLoginStillTakesPrecedenceOverDefaultUser() {
+        var auth = registerUser();
+
+        var me = restTemplate.exchange(
+            "/api/auth/me",
+            HttpMethod.GET,
+            bearer(auth.token()),
+            AuthDtos.UserDto.class
+        );
+
+        assertThat(me.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(me.getBody()).isNotNull();
+        assertThat(me.getBody().username()).isEqualTo(auth.user().username());
     }
 
     @Test

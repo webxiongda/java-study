@@ -22,3 +22,6 @@ app:
     enabled: ${DEMO_ACCOUNT_ENABLED:true}
     username: ${DEMO_ACCOUNT_USERNAME:demo}
     secret: ${DEMO_ACCOUNT_SECRET:java-study-demo-secret-2026}
+  auth:
+    # 免登录开关：指定默认用户名（复用 demo 账号），设为 off 可关回原登录流程
+    auto-login-username: ${AUTO_LOGIN_USERNAME:demo}

@@ -44,7 +44,9 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                 .requestMatchers("/api/health").permitAll()
                 .requestMatchers("/api/auth/**").permitAll()
-                .anyRequest().authenticated()
+                // 免登录：JwtAuthenticationFilter 会为无 token 请求注入默认用户身份，
+                // 这里统一放行，由 filter 决定是否补身份。设 app.auth.auto-login-username=off 可关回。
+                .anyRequest().permitAll()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
             .build();

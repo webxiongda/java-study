@@ -246,11 +246,8 @@ function App() {
   }
 
   useEffect(() => {
-    const token = localStorage.getItem('java-study-token');
-    if (!token) {
-      setAuthReady(true);
-      return;
-    }
+    // 免登录模式：后端在无 token 时会返回默认用户（demo），
+    // 因此这里始终请求 /api/auth/me，不再因本地无 token 就直接跳登录页。
     api<UserDto>('/api/auth/me')
       .then((user) => setAuthUser(user))
       .catch((error) => {
