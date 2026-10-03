@@ -76,8 +76,7 @@ jobs:
           # 轮询直到结束
           while :; do
             STATUS=$(aliyun ecs DescribeInvocationResults --profile ecs-deploy \
-              --region "$REGION" --InvokeId "$IID" \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['Invocation']['InvocationResults']['InvocationResult'][0]['InvocationStatus'])")
+              --region "$REGION" --InvokeId "$IID" | python3 deploy/ca_result.py status)
             echo "  状态: $STATUS"
             case "$STATUS" in
               Running|Pending) sleep 15 ;;
@@ -85,14 +84,10 @@ jobs:
             esac
           done
 
-          # 打印输出
+          # 打印输出（用仓库内脚本解析，避免内联多行 Python 顶断 YAML 缩进）
           aliyun ecs DescribeInvocationResults --profile ecs-deploy \
-            --region "$REGION" --InvokeId "$IID" \
-            | python3 -c "
-import sys, json, base64
-r = json.load(sys.stdin)['Invocation']['InvocationResults']['InvocationResult'][0]
-print(base64.b64decode(r.get('Output','')).decode(errors='replace'))
-" | tee /tmp/ca-output.log
+            --region "$REGION" --InvokeId "$IID" | python3 deploy/ca_result.py output \
+            | tee /tmp/ca-output.log
 
           # 失败即让 workflow 失败（不吞错误）
           grep -q "JAVA-STUDY DEPLOY DONE" /tmp/ca-output.log || {
