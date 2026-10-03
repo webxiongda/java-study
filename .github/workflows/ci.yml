@@ -1,0 +1,52 @@
+name: java-study CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: java-study-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 前端构建 + 后端测试
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: 安装前端依赖
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeScript 类型检查 + 构建
+        run: npm run build
+
+      - name: 安装 JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Maven 缓存
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-m2-java-study-${{ hashFiles('backend/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2-java-study-
+
+      - name: 后端测试
+        # 测试用 H2（application-test profile），无需 MySQL
+        run: mvn -B -f backend/pom.xml test
+
+      - name: 打包校验（不部署）
+        run: mvn -B -f backend/pom.xml package -DskipTests
