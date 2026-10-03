@@ -67,14 +67,23 @@ echo "=== 4. 构建后端 jar ==="
 cd "$SITE_DIR/backend"
 [ -f app.jar ] && mv app.jar "app.jar.old-$(date +%s)" || true
 export DB_URL DB_USERNAME DB_PASSWORD JWT_SECRET
-"$MVN" -B clean package -DskipTests 2>&1 | grep -E "ERROR|BUILD|Building jar" | tail -10
+# 不要接 grep -E 过滤 mvn 输出：构建成功时若没有一行匹配，grep 返回 1，
+# 在 set -e + pipefail 下会误判为失败并中断（jar 其实已打好）。
+"$MVN" -B clean package -DskipTests 2>&1 | tail -15
 JAR=$(ls -t target/*.jar 2>/dev/null | head -1)
 [ -n "$JAR" ] || { echo "❌ 未生成 jar"; exit 1; }
 cp "$JAR" app.jar
 echo "app.jar: $(du -h app.jar | cut -f1)"
-unzip -l app.jar 2>/dev/null | grep -q AutoLoginService \
-  && echo "✅ AutoLoginService 已打包" \
-  || { echo "❌ jar 内无 AutoLoginService，中止（不重启服务）"; exit 1; }
+# 先落盘再 grep：不要写 `unzip -l app.jar | grep -q X`。
+# grep -q 命中即退出会给 unzip 发 SIGPIPE（退出码 141），在 set -e + pipefail
+# 下会被误判成「类缺失」而中止部署 —— 这是 2026-10-03 首次自动部署的真实故障。
+unzip -l app.jar > /tmp/_java-jarlist.txt 2>/dev/null || true
+if grep -q AutoLoginService /tmp/_java-jarlist.txt; then
+  echo "✅ AutoLoginService 已打包"
+else
+  echo "❌ jar 内无 AutoLoginService，中止（不重启服务，旧 jar 继续运行）"
+  exit 1
+fi
 
 echo "=== 5. 重启 systemd ==="
 systemctl restart java-study.service
@@ -92,7 +101,7 @@ echo -n "auth/me  : "; curl -s -m 8 "http://127.0.0.1:${BACKEND_PORT}/api/auth/m
 for p in summary chapters interview/categories; do
   printf "  %-20s %s\n" "$p:" "$(curl -s -m 8 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${BACKEND_PORT}/api/$p")"
 done
-echo "chapters 条数: $(curl -s -m 8 "http://127.0.0.1:${BACKEND_PORT}/api/chapters" | grep -o '"no"' | wc -l)"
+echo "chapters 条数: $(curl -s -m 8 "http://127.0.0.1:${BACKEND_PORT}/api/chapters" | grep -o '"no"' | wc -l | tr -d ' ')"
 
 # 回滚提示（不自动执行，避免误回滚）
 echo ""
