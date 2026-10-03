@@ -1,0 +1,128 @@
+name: java-study Deploy
+
+# 触发方式：
+#   push 到 main 且 CI 通过 → 自动部署
+#   手动 workflow_dispatch    → 手动重部署（不带缓存）
+#
+# 部署通道：阿里云 Cloud Assistant（aliyun ecs RunCommand），不用 SSH。
+# 原因：GitHub Actions runner 与本机同属境外出口，直连 47.93.15.207:22 会被
+# 阿里云上游静默丢包（同本机 nc 测试超时），安全组规则在该层之下，加了也无效。
+# Cloud Assistant 走 HTTPS API，不受此限制，是已验证可用的兜底通道。
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: java-study-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 部署到 ECS
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 部署前记录当前线上版本
+        id: before
+        run: |
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "author=$(git log -1 --pretty='%an')" >> "$GITHUB_OUTPUT"
+          echo "message=$(git log -1 --pretty='%s')" >> "$GITHUB_OUTPUT"
+
+      # ---------- Cloud Assistant 执行 ----------
+      - name: 通过 Cloud Assistant 下发部署脚本
+        id: run_command
+        env:
+          ALICLOUD_ACCESS_KEY_ID: ${{ secrets.ALIYUN_AK }}
+          ALICLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_SK }}
+          REGION: cn-beijing
+          INSTANCE_ID: i-2zecv4kgasiw24p97v0t
+        run: |
+          set -eo pipefail
+
+          # 安装 aliyun CLI
+          curl -fsSL -o aliyun-cli.tgz \
+            https://aliyuncli.alicdn.com/aliyun-cli-linux-latest-amd64.tgz
+          tar -xzf aliyun-cli.tgz
+          install -m 0755 aliyun /usr/local/bin/aliyun
+
+          aliyun configure set --mode AK \
+            --profile ecs-deploy \
+            --region "$REGION" \
+            --access-key-id "$ALICLOUD_ACCESS_KEY_ID" \
+            --access-key-secret "$ALICLOUD_ACCESS_KEY_SECRET" >/dev/null
+
+          # 脚本内容走 stdin，避免超长命令行
+          IID=$(aliyun ecs RunCommand --profile ecs-deploy \
+            --region "$REGION" \
+            --Type RunShellScript \
+            --Timeout 1800 \
+            --InstanceId.1 "$INSTANCE_ID" \
+            --ContentEncoding Base64 \
+            --CommandContent "$(base64 -w0 < deploy/deploy-java.sh)" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['InvokeId'])")
+
+          echo "InvokeId=$IID"
+          echo "::add-mask::$IID"
+
+          # 轮询直到结束
+          while :; do
+            STATUS=$(aliyun ecs DescribeInvocationResults --profile ecs-deploy \
+              --region "$REGION" --InvokeId "$IID" | python3 deploy/ca_result.py status)
+            echo "  状态: $STATUS"
+            case "$STATUS" in
+              Running|Pending) sleep 15 ;;
+              *) break ;;
+            esac
+          done
+
+          # 打印输出（用仓库内脚本解析，避免内联多行 Python 顶断 YAML 缩进）
+          aliyun ecs DescribeInvocationResults --profile ecs-deploy \
+            --region "$REGION" --InvokeId "$IID" | python3 deploy/ca_result.py output \
+            | tee /tmp/ca-output.log
+
+          # 失败即让 workflow 失败（不吞错误）
+          grep -q "JAVA-STUDY DEPLOY DONE" /tmp/ca-output.log || {
+            echo "::error::部署未完成，DONE 标记缺失"
+            exit 1
+          }
+
+      - name: 部署结果
+        if: always()
+        run: |
+          {
+            echo "### 部署完成"
+            echo ""
+            echo "- commit: \`${{ steps.before.outputs.commit }}\` — ${{ steps.before.outputs.message }}"
+            echo "- 站点: http://47.93.15.207:8083/"
+            echo ""
+            echo '```'
+            cat /tmp/ca-output.log 2>/dev/null | tail -30 || echo '(无输出)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 外网复验（本地 curl）
+        run: |
+          set -eo pipefail
+          sleep 5
+          echo "=== 首页 ==="
+          curl -sS --max-time 15 -o /dev/null -w 'HTTP %{http_code}\n' http://47.93.15.207:8083/
+          echo "=== 免登录接口（无 token）==="
+          echo -n "auth/me : "
+          curl -sS --max-time 15 http://47.93.15.207:8083/api/auth/me
+          echo ""
+          echo -n "summary : "
+          curl -sS --max-time 15 -o /dev/null -w '%{http_code}\n' http://47.93.15.207:8083/api/summary
+          echo -n "chapters: "
+          curl -sS --max-time 15 -o /dev/null -w '%{http_code}\n' http://47.93.15.207:8083/api/chapters
+          echo -n "health  : "
+          curl -sS --max-time 15 http://47.93.15.207:8083/api/health
+          echo ""
